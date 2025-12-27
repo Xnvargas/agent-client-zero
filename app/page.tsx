@@ -1,17 +1,17 @@
-import EnhancedChatWrapper from "@/components/EnhancedChatWrapper";
+import AgentChatApp from "@/components/AgentChatApp";
 
 export default function Home() {
+  // Environment variables for optional default configuration
+  // If set, the app will try to connect automatically
+  // If not set, users will see the setup screen to enter their agent URL
+  const defaultAgentUrl = process.env.NEXT_PUBLIC_AGENT_URL;
+  const defaultApiKey = process.env.NEXT_PUBLIC_AGENT_API_KEY;
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between">
-      {/* In production, agentUrl would come from user config passed via props or context, 
-          but typically the wrapper handles the specific agent connection details 
-          via the API route proxy if using the secure pattern. 
-          Here we assume the insecure direct connection pattern for the wrapper as described 
-          in the first part of the guide, OR the secure pattern where agentUrl points to our API.
-      */}
-      <EnhancedChatWrapper 
-        agentUrl={process.env.NEXT_PUBLIC_AGENT_URL || '/api/agent/send'} 
-        apiKey={process.env.NEXT_PUBLIC_AGENT_API_KEY || ''} 
+    <main className="min-h-screen">
+      <AgentChatApp
+        defaultAgentUrl={defaultAgentUrl}
+        defaultApiKey={defaultApiKey}
       />
     </main>
   );
