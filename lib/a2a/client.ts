@@ -22,6 +22,26 @@ export interface AgentCard {
   capabilities?: {
     streaming?: boolean
   }
+  extensions?: string[]
+}
+
+// Extension configuration for A2A requests
+export interface A2AExtensionConfig {
+  // Settings extension configuration (for BeeAI/AgentStack compatibility)
+  settings?: {
+    thinking_group?: {
+      thinking?: boolean
+    }
+    [key: string]: unknown
+  }
+  // Other extensions can be added here
+  [key: string]: unknown
+}
+
+// Configuration options for the A2A client
+export interface A2AClientConfig {
+  apiKey?: string
+  extensions?: A2AExtensionConfig
 }
 
 export interface A2AError {
@@ -71,14 +91,30 @@ export class A2AClient {
   private baseUrl: string
   private jsonRpcUrl: string
   private apiKey: string
+  private extensions: A2AExtensionConfig
   private agentCard: AgentCard | null = null
 
-  constructor(agentUrl: string, apiKey: string = '') {
+  constructor(agentUrl: string, config: A2AClientConfig = {}) {
     // Normalize URL
     this.baseUrl = agentUrl.replace(/\/$/, '')
     // JSON-RPC endpoint per A2A guide
     this.jsonRpcUrl = `${this.baseUrl}/jsonrpc/`
-    this.apiKey = apiKey
+    this.apiKey = config.apiKey || ''
+    this.extensions = config.extensions || {}
+  }
+
+  /**
+   * Get configured extensions
+   */
+  getExtensions(): A2AExtensionConfig {
+    return this.extensions
+  }
+
+  /**
+   * Update extension configuration
+   */
+  setExtensions(extensions: A2AExtensionConfig): void {
+    this.extensions = extensions
   }
 
   async initialize(): Promise<AgentCard> {
@@ -124,22 +160,32 @@ export class A2AClient {
     return this.jsonRpcUrl
   }
 
+  /**
+   * Build the base params object for A2A requests
+   */
+  private buildRequestParams(message: string): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      message: {
+        role: 'user',
+        messageId: generateUUID(),
+        parts: [{ kind: 'text', text: message }]
+      }
+    }
+
+    // Include extension configuration if available
+    // This allows the agent to access settings like thinking mode
+    if (Object.keys(this.extensions).length > 0) {
+      params.extensions = this.extensions
+    }
+
+    return params
+  }
+
   async sendMessage(message: string): Promise<any> {
     const payload = {
       jsonrpc: '2.0',
       method: 'message/send',
-      params: {
-        message: {
-          role: 'user',
-          messageId: generateUUID(),
-          parts: [
-            {
-              kind: 'text',
-              text: message
-            }
-          ]
-        }
-      },
+      params: this.buildRequestParams(message),
       id: generateUUID()
     }
 
@@ -179,13 +225,7 @@ export class A2AClient {
     const payload = {
       jsonrpc: '2.0',
       method: 'message/stream',
-      params: {
-        message: {
-          role: 'user',
-          messageId: generateUUID(),
-          parts: [{ kind: 'text', text: message }]
-        }
-      },
+      params: this.buildRequestParams(message),
       id: generateUUID()
     }
 

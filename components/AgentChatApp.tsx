@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import dynamic from 'next/dynamic'
-import AgentSetup, { clearSavedConfig } from './AgentSetup'
+import AgentSetup, { clearSavedConfig, type AgentConfig, type A2AExtensionConfig } from './AgentSetup'
 
 // Dynamic import for FullScreenChat to avoid SSR issues
 const FullScreenChat = dynamic(() => import('./FullScreenChat'), {
@@ -14,24 +14,24 @@ const FullScreenChat = dynamic(() => import('./FullScreenChat'), {
   )
 })
 
-interface AgentCard {
-  name: string
-  url: string
-  description?: string
-  skills?: Array<{ id: string; name: string; description: string }>
-}
-
-interface AgentConfig {
-  agentUrl: string
-  apiKey: string
-  agentCard: AgentCard
-}
-
 interface AgentChatAppProps {
   // Optional props to bypass setup screen (for backwards compatibility)
   defaultAgentUrl?: string
   defaultApiKey?: string
   skipSetup?: boolean
+}
+
+// Default settings for skip setup mode
+const DEFAULT_SKIP_SETTINGS = {
+  thinkingEnabled: true
+}
+
+const DEFAULT_SKIP_EXTENSIONS: A2AExtensionConfig = {
+  settings: {
+    thinking_group: {
+      thinking: true
+    }
+  }
 }
 
 export default function AgentChatApp({
@@ -48,7 +48,9 @@ export default function AgentChatApp({
         agentCard: {
           name: 'AI Assistant',
           url: defaultAgentUrl
-        }
+        },
+        settings: DEFAULT_SKIP_SETTINGS,
+        extensions: DEFAULT_SKIP_EXTENSIONS
       }
     }
     return null
@@ -81,6 +83,8 @@ export default function AgentChatApp({
       apiKey={config.apiKey}
       agentName={config.agentCard.name}
       onDisconnect={handleDisconnect}
+      extensions={config.extensions}
+      showThinkingIndicator={config.settings?.thinkingEnabled ?? true}
     />
   )
 }

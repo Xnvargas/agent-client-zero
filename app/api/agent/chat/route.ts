@@ -13,9 +13,25 @@ function generateUUID(): string {
   });
 }
 
+// Extension configuration type for A2A requests
+interface A2AExtensionConfig {
+  settings?: {
+    thinking_group?: {
+      thinking?: boolean
+    }
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
 export async function POST(request: Request) {
   try {
-    const { agentUrl, apiKey, message } = await request.json()
+    const { agentUrl, apiKey, message, extensions } = await request.json() as {
+      agentUrl: string
+      apiKey?: string
+      message: string
+      extensions?: A2AExtensionConfig
+    }
 
     if (!agentUrl || !message) {
       return NextResponse.json(
@@ -32,17 +48,26 @@ export async function POST(request: Request) {
       normalizedUrl = `${normalizedUrl}/`
     }
 
+    // Build the params object with message and optional extensions
+    const params: Record<string, unknown> = {
+      message: {
+        role: 'user',
+        messageId: generateUUID(),
+        parts: [{ kind: 'text', text: message }]
+      }
+    }
+
+    // Include extension configuration if provided
+    // This allows the agent to access settings like thinking mode
+    if (extensions && Object.keys(extensions).length > 0) {
+      params.extensions = extensions
+    }
+
     // Build the A2A streaming request payload per the official guide
     const payload = {
       jsonrpc: '2.0',
       method: 'message/stream',
-      params: {
-        message: {
-          role: 'user',
-          messageId: generateUUID(),
-          parts: [{ kind: 'text', text: message }]
-        }
-      },
+      params,
       id: generateUUID()
     }
 

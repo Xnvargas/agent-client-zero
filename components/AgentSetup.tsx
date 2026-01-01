@@ -8,12 +8,31 @@ interface AgentCard {
   description?: string
   skills?: Array<{ id: string; name: string; description: string }>
   securitySchemes?: Record<string, any>
+  extensions?: string[]
 }
 
-interface AgentConfig {
+// Extension configuration for A2A requests
+export interface A2AExtensionConfig {
+  settings?: {
+    thinking_group?: {
+      thinking?: boolean
+    }
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
+// Agent settings that can be configured in the UI
+export interface AgentSettings {
+  thinkingEnabled: boolean
+}
+
+export interface AgentConfig {
   agentUrl: string
   apiKey: string
   agentCard: AgentCard
+  settings: AgentSettings
+  extensions: A2AExtensionConfig
 }
 
 interface AgentSetupProps {
@@ -24,12 +43,30 @@ interface AgentSetupProps {
 
 const STORAGE_KEY = 'agent-client-zero-config'
 
+// Default agent settings
+const DEFAULT_SETTINGS: AgentSettings = {
+  thinkingEnabled: true
+}
+
+// Build extension configuration from settings
+function buildExtensions(settings: AgentSettings): A2AExtensionConfig {
+  return {
+    settings: {
+      thinking_group: {
+        thinking: settings.thinkingEnabled
+      }
+    }
+  }
+}
+
 export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey = '' }: AgentSetupProps) {
   const [agentUrl, setAgentUrl] = useState(initialUrl)
   const [apiKey, setApiKey] = useState(initialApiKey)
   const [isValidating, setIsValidating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [validatedCard, setValidatedCard] = useState<AgentCard | null>(null)
+  const [settings, setSettings] = useState<AgentSettings>(DEFAULT_SETTINGS)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Load saved config on mount
   useEffect(() => {
@@ -38,8 +75,14 @@ export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey =
       if (saved) {
         const config = JSON.parse(saved) as AgentConfig
         if (config.agentUrl && config.agentCard) {
+          // Ensure config has settings and extensions (backwards compatibility)
+          const completeConfig: AgentConfig = {
+            ...config,
+            settings: config.settings || DEFAULT_SETTINGS,
+            extensions: config.extensions || buildExtensions(config.settings || DEFAULT_SETTINGS)
+          }
           // Auto-connect with saved config
-          onConnect(config)
+          onConnect(completeConfig)
         }
       }
     } catch (e) {
@@ -105,7 +148,9 @@ export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey =
     const config: AgentConfig = {
       agentUrl: normalizedUrl,
       apiKey: apiKey.trim(),
-      agentCard: validatedCard
+      agentCard: validatedCard,
+      settings,
+      extensions: buildExtensions(settings)
     }
 
     // Save to localStorage
@@ -116,7 +161,7 @@ export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey =
     }
 
     onConnect(config)
-  }, [agentUrl, apiKey, validatedCard, onConnect])
+  }, [agentUrl, apiKey, validatedCard, settings, onConnect])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -175,6 +220,38 @@ export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey =
               disabled={isValidating}
             />
           </div>
+
+          {/* Advanced Settings Toggle */}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="agent-setup__advanced-toggle"
+          >
+            {showAdvanced ? '- Hide Advanced Settings' : '+ Show Advanced Settings'}
+          </button>
+
+          {/* Advanced Settings Panel */}
+          {showAdvanced && (
+            <div className="agent-setup__advanced">
+              <div className="agent-setup__field agent-setup__field--checkbox">
+                <label className="agent-setup__checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={settings.thinkingEnabled}
+                    onChange={(e) => setSettings(prev => ({
+                      ...prev,
+                      thinkingEnabled: e.target.checked
+                    }))}
+                    className="agent-setup__checkbox"
+                  />
+                  <span>Enable Thinking Mode</span>
+                </label>
+                <span className="agent-setup__hint">
+                  When enabled, the agent will show its reasoning process (requires agent support)
+                </span>
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="agent-setup__error">

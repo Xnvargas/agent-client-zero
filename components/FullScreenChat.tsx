@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState } from 'react'
 
 const ChatCustomElement = dynamic(
   () => import('@carbon/ai-chat').then((mod) => mod.ChatCustomElement),
@@ -14,6 +14,17 @@ const ChatCustomElement = dynamic(
     )
   }
 )
+
+// Extension configuration for A2A requests
+export interface A2AExtensionConfig {
+  settings?: {
+    thinking_group?: {
+      thinking?: boolean
+    }
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
 
 // A2A streaming response types per the official guide
 interface A2AMessagePart {
@@ -50,17 +61,30 @@ interface FullScreenChatProps {
   apiKey?: string
   agentName?: string
   onDisconnect?: () => void
+  // Extension configuration to pass to the agent
+  extensions?: A2AExtensionConfig
+  // Whether to show thinking mode indicator
+  showThinkingIndicator?: boolean
 }
 
 export default function FullScreenChat({
   agentUrl,
   apiKey = '',
   agentName = 'AI Assistant',
-  onDisconnect
+  onDisconnect,
+  extensions,
+  showThinkingIndicator = true
 }: FullScreenChatProps) {
   const chatInstanceRef = useRef<any>(null)
+  // Track agent status for UI indicators
+  const [agentStatus, setAgentStatus] = useState<'idle' | 'working' | 'completed' | 'failed'>('idle')
+  const [isThinking, setIsThinking] = useState(false)
 
   const handleSendMessage = useCallback(async (message: string) => {
+    // Reset status at the start of a new message
+    setAgentStatus('working')
+    setIsThinking(false)
+
     try {
       // Use the proxy endpoint to avoid CORS issues
       const response = await fetch('/api/agent/chat', {
@@ -71,7 +95,9 @@ export default function FullScreenChat({
         body: JSON.stringify({
           agentUrl,
           apiKey,
-          message
+          message,
+          // Include extension configuration for agent settings
+          extensions
         })
       })
 
@@ -137,6 +163,11 @@ export default function FullScreenChat({
                 const result = data.result
                 console.log('A2A result:', result.kind, result.status?.state, result.final)
 
+                // Update agent status based on stream state
+                if (result.status?.state) {
+                  setAgentStatus(result.status.state as 'working' | 'completed' | 'failed')
+                }
+
                 // Handle status updates with agent messages
                 if (result.kind === 'status-update' && result.status?.message) {
                   const agentMessage = result.status.message
@@ -147,17 +178,42 @@ export default function FullScreenChat({
                     if (part.kind === 'text' && part.text) {
                       console.log('[DEBUG] Attempting to add message to chat UI...')
                       console.log('[DEBUG] Message text:', part.text)
-                      
+
+                      // Detect thinking mode status messages
+                      const isThinkingModeMessage =
+                        part.text.toLowerCase().includes('thinking mode') ||
+                        part.text.toLowerCase().includes("i'll show my reasoning")
+
+                      if (isThinkingModeMessage) {
+                        setIsThinking(true)
+                        console.log('[DEBUG] Thinking mode detected')
+                      }
+
+                      // Check for error-like messages (e.g., settings not available)
+                      const isErrorMessage =
+                        part.text.toLowerCase().includes('error') ||
+                        part.text.toLowerCase().includes("hasn't been activated") ||
+                        part.text.toLowerCase().includes('not available')
+
                       try {
                         // Carbon Chat expects message with response array
                         const messagePayload = {
                           response: [{
-                            response_type: 'text',
-                            text: part.text
+                            response_type: isErrorMessage ? 'user_defined' : 'text',
+                            ...(isErrorMessage
+                              ? {
+                                  user_defined: {
+                                    type: 'status_message',
+                                    messageType: 'warning',
+                                    text: part.text
+                                  }
+                                }
+                              : { text: part.text }
+                            )
                           }]
                         }
                         console.log('[DEBUG] Message payload:', messagePayload)
-                        
+
                         await chatInstanceRef.current?.messaging.addMessage(messagePayload)
                         console.log('[DEBUG] addMessage completed')
                       } catch (addError) {
@@ -197,6 +253,8 @@ export default function FullScreenChat({
                 // Check if stream is complete
                 if (result.final === true) {
                   console.log('Stream completed with status:', result.status?.state)
+                  setAgentStatus('completed')
+                  setIsThinking(false)
                 }
               }
             } catch (parseError) {
@@ -210,14 +268,20 @@ export default function FullScreenChat({
       }
     } catch (error) {
       console.error('Error sending message:', error)
+      setAgentStatus('failed')
+      setIsThinking(false)
       await chatInstanceRef.current?.messaging.addMessage({
         response: [{
-          response_type: 'text',
-          text: `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
+          response_type: 'user_defined',
+          user_defined: {
+            type: 'status_message',
+            messageType: 'error',
+            text: `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }
         }]
       })
     }
-  }, [agentUrl, apiKey])
+  }, [agentUrl, apiKey, extensions])
 
   const renderCustomResponse = useCallback((state: any, instance: any) => {
     const messageItem = state.messageItem
@@ -307,11 +371,53 @@ export default function FullScreenChat({
       )
     }
 
+    // Handle status messages (warnings, errors, info)
+    if (userDefined.type === 'status_message') {
+      const bgColor =
+        userDefined.messageType === 'error'
+          ? 'bg-red-50 border-red-200'
+          : userDefined.messageType === 'warning'
+            ? 'bg-yellow-50 border-yellow-200'
+            : 'bg-blue-50 border-blue-200'
+
+      const textColor =
+        userDefined.messageType === 'error'
+          ? 'text-red-700'
+          : userDefined.messageType === 'warning'
+            ? 'text-yellow-700'
+            : 'text-blue-700'
+
+      const icon =
+        userDefined.messageType === 'error'
+          ? '⚠️'
+          : userDefined.messageType === 'warning'
+            ? '⚠️'
+            : 'ℹ️'
+
+      return (
+        <div className={`border rounded-lg p-3 ${bgColor}`}>
+          <div className={`flex items-start gap-2 ${textColor}`}>
+            <span className="flex-shrink-0">{icon}</span>
+            <span>{userDefined.text}</span>
+          </div>
+        </div>
+      )
+    }
+
     return null
   }, [])
 
   return (
     <div className="full-screen-chat">
+      {/* Status indicator for agent state */}
+      {showThinkingIndicator && agentStatus === 'working' && (
+        <div className="agent-status-indicator">
+          <div className="agent-status-indicator__content">
+            <div className="agent-status-indicator__spinner" />
+            <span>{isThinking ? 'Agent is thinking...' : 'Agent is working...'}</span>
+          </div>
+        </div>
+      )}
       <ChatCustomElement
         className="chat-custom-element"
         debug={true}
