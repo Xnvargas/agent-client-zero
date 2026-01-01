@@ -2,8 +2,6 @@
 
 import dynamic from 'next/dynamic'
 import { useRef, useCallback } from 'react'
-import { A2AClient, StreamChunk } from '@/lib/a2a/client'
-import { A2AToCarbonTranslator } from '@/lib/translator/a2a-to-carbon'
 
 const ChatCustomElement = dynamic(
   () => import('@carbon/ai-chat').then((mod) => mod.ChatCustomElement),
@@ -16,6 +14,36 @@ const ChatCustomElement = dynamic(
     )
   }
 )
+
+// A2A streaming response types per the official guide
+interface A2AMessagePart {
+  kind: 'text' | 'file' | 'data'
+  text?: string
+  file?: {
+    name: string
+    mimeType: string
+    bytes?: string
+    uri?: string
+  }
+  data?: Record<string, unknown>
+}
+
+interface A2AMessage {
+  role: string
+  messageId: string
+  parts: A2AMessagePart[]
+}
+
+interface A2AStreamResult {
+  contextId?: string
+  taskId?: string
+  kind: 'status-update' | 'artifact-update'
+  status?: {
+    state: 'working' | 'completed' | 'failed' | 'canceled'
+    message?: A2AMessage
+  }
+  final?: boolean
+}
 
 interface FullScreenChatProps {
   agentUrl: string
@@ -31,37 +59,165 @@ export default function FullScreenChat({
   onDisconnect
 }: FullScreenChatProps) {
   const chatInstanceRef = useRef<any>(null)
-  const a2aClient = useRef(new A2AClient(agentUrl, apiKey))
-  const translator = useRef(new A2AToCarbonTranslator())
 
   const handleSendMessage = useCallback(async (message: string) => {
     try {
-      await a2aClient.current.streamMessage(message, async (chunk: StreamChunk) => {
-        if (chunk.kind === 'status-update') {
-          console.log('Agent status:', chunk.status?.state)
+      // Use the proxy endpoint to avoid CORS issues
+      const response = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentUrl,
+          apiKey,
+          message
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null)
+        throw new Error(errorData?.error || `Request failed: ${response.status} ${response.statusText}`)
+      }
+
+      if (!response.body) {
+        throw new Error('Response body is null')
+      }
+
+      // Process the SSE stream per A2A guide
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      console.log('[DEBUG] Starting to read SSE stream...')
+
+      while (true) {
+        const { done, value } = await reader.read()
+        console.log('[DEBUG] Read result - done:', done, 'value length:', value?.length || 0)
+        if (done) {
+          console.log('[DEBUG] Stream finished. Remaining buffer:', buffer)
+          break
         }
 
-        if (chunk.kind === 'artifact-update' && chunk.artifact) {
-          const carbonMessages = translator.current.translateTask({
-            id: chunk.taskId || 'unknown',
-            status: { state: 'completed' },
-            artifacts: [chunk.artifact],
-            history: []
-          })
+        const chunk = decoder.decode(value, { stream: true })
+        console.log('[DEBUG] Decoded chunk:', chunk)
+        buffer += chunk
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        console.log('[DEBUG] Split into', lines.length, 'lines, buffer remainder:', buffer.length, 'chars')
 
-          for (const carbonMessage of carbonMessages) {
-            await chatInstanceRef.current?.messaging.addMessage(carbonMessage)
+        for (const line of lines) {
+          const trimmedLine = line.trim()
+          console.log('[DEBUG] Processing line:', trimmedLine.substring(0, 100))
+          if (trimmedLine.startsWith('data: ')) {
+            const dataStr = trimmedLine.slice(6)
+            if (!dataStr || dataStr === '[DONE]') continue
+
+            try {
+              const data = JSON.parse(dataStr) as { 
+                jsonrpc: string
+                id: string
+                result?: A2AStreamResult
+                error?: { code: number; message: string }
+              }
+
+              // Check for errors
+              if (data.error) {
+                console.error('A2A error:', data.error)
+                await chatInstanceRef.current?.messaging.addMessage({
+                  response: [{
+                    response_type: 'text',
+                    text: `Error: ${data.error.message}`
+                  }]
+                })
+                continue
+              }
+
+              if (data.result) {
+                const result = data.result
+                console.log('A2A result:', result.kind, result.status?.state, result.final)
+
+                // Handle status updates with agent messages
+                if (result.kind === 'status-update' && result.status?.message) {
+                  const agentMessage = result.status.message
+                  console.log('Agent message parts:', agentMessage.parts)
+
+                  // Extract text from message parts
+                  for (const part of agentMessage.parts) {
+                    if (part.kind === 'text' && part.text) {
+                      console.log('[DEBUG] Attempting to add message to chat UI...')
+                      console.log('[DEBUG] Message text:', part.text)
+                      
+                      try {
+                        // Carbon Chat expects message with response array
+                        const messagePayload = {
+                          response: [{
+                            response_type: 'text',
+                            text: part.text
+                          }]
+                        }
+                        console.log('[DEBUG] Message payload:', messagePayload)
+                        
+                        await chatInstanceRef.current?.messaging.addMessage(messagePayload)
+                        console.log('[DEBUG] addMessage completed')
+                      } catch (addError) {
+                        console.error('[DEBUG] addMessage error:', addError)
+                      }
+                    } else if (part.kind === 'file' && part.file) {
+                      await chatInstanceRef.current?.messaging.addMessage({
+                        response: [{
+                          response_type: 'user_defined',
+                          user_defined: {
+                            type: 'file_attachment',
+                            fileName: part.file.name,
+                            mimeType: part.file.mimeType,
+                            downloadUrl: part.file.uri || `data:${part.file.mimeType};base64,${part.file.bytes}`
+                          }
+                        }]
+                      })
+                    } else if (part.kind === 'data' && part.data) {
+                      await chatInstanceRef.current?.messaging.addMessage({
+                        response: [{
+                          response_type: 'user_defined',
+                          user_defined: {
+                            type: 'structured_data',
+                            data: part.data
+                          }
+                        }]
+                      })
+                    }
+                  }
+                }
+
+                // Log status changes
+                if (result.kind === 'status-update') {
+                  console.log('Agent status:', result.status?.state)
+                }
+
+                // Check if stream is complete
+                if (result.final === true) {
+                  console.log('Stream completed with status:', result.status?.state)
+                }
+              }
+            } catch (parseError) {
+              if (!(parseError instanceof SyntaxError)) {
+                throw parseError
+              }
+              console.warn('Failed to parse SSE data:', dataStr)
+            }
           }
         }
-      })
+      }
     } catch (error) {
       console.error('Error sending message:', error)
       await chatInstanceRef.current?.messaging.addMessage({
-        response_type: 'text',
-        text: 'Sorry, there was an error communicating with the agent. Please try again.'
+        response: [{
+          response_type: 'text',
+          text: `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
+        }]
       })
     }
-  }, [])
+  }, [agentUrl, apiKey])
 
   const renderCustomResponse = useCallback((state: any, instance: any) => {
     const messageItem = state.messageItem
@@ -158,7 +314,7 @@ export default function FullScreenChat({
     <div className="full-screen-chat">
       <ChatCustomElement
         className="chat-custom-element"
-        debug={false}
+        debug={true}
         aiEnabled={true}
         openChatByDefault={true}
         layout={{

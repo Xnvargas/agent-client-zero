@@ -49,44 +49,24 @@ export default function AgentSetup({ onConnect, initialUrl = '', initialApiKey =
 
   const validateAgentUrl = useCallback(async (url: string): Promise<{ card: AgentCard | null; error?: string }> => {
     try {
-      // Normalize URL
-      let normalizedUrl = url.trim()
-      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-        normalizedUrl = 'http://' + normalizedUrl
-      }
-      // Remove trailing slash
-      normalizedUrl = normalizedUrl.replace(/\/$/, '')
-
-      const cardUrl = `${normalizedUrl}/.well-known/agent-card.json`
-
-      const response = await fetch(cardUrl, {
-        method: 'GET',
+      // Use server-side proxy to avoid CORS issues
+      const response = await fetch('/api/agent/validate', {
+        method: 'POST',
         headers: {
-          'Accept': 'application/json'
+          'Content-Type': 'application/json'
         },
-        mode: 'cors'
+        body: JSON.stringify({ agentUrl: url })
       })
 
+      const data = await response.json()
+
       if (!response.ok) {
-        return { card: null, error: `Server returned ${response.status}: ${response.statusText}` }
+        return { card: null, error: data.error || `Server returned ${response.status}` }
       }
 
-      const card = await response.json()
-
-      // Validate required fields
-      if (!card.name || !card.url) {
-        return { card: null, error: 'Invalid agent card: missing name or url field' }
-      }
-
-      return { card }
+      return { card: data.card }
     } catch (e) {
       const error = e as Error
-      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-        return {
-          card: null,
-          error: 'Network error: The agent may not be running, or CORS is blocking the request. Ensure your agent server allows cross-origin requests from this domain.'
-        }
-      }
       return { card: null, error: error.message || 'Unknown error occurred' }
     }
   }, [])

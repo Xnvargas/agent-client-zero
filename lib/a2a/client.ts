@@ -1,9 +1,27 @@
+/**
+ * Generate a UUID v4 string with cross-browser compatibility
+ * Falls back to crypto.getRandomValues() if crypto.randomUUID() is unavailable
+ */
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback using crypto.getRandomValues() for broader browser support
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (c === 'x' ? 0 : 3);
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 export interface AgentCard {
   name: string
   url: string
   description?: string
   skills?: Array<{ id: string; name: string; description: string }>
   securitySchemes?: Record<string, any>
+  capabilities?: {
+    streaming?: boolean
+  }
 }
 
 export interface A2AError {
@@ -12,46 +30,60 @@ export interface A2AError {
   data?: any
 }
 
+// A2A Message types per official guide
+export interface A2AMessagePart {
+  kind: 'text' | 'file' | 'data'
+  text?: string
+  file?: {
+    name: string
+    mimeType: string
+    bytes?: string
+    uri?: string
+  }
+  data?: Record<string, unknown>
+}
+
+export interface A2AMessage {
+  role: string
+  messageId: string
+  parts: A2AMessagePart[]
+}
+
+// Stream response types per official A2A guide
 export interface StreamChunk {
-  kind: 'task' | 'status-update' | 'artifact-update'
+  contextId?: string
   taskId?: string
+  kind: 'status-update' | 'artifact-update'
   status?: {
-    state: 'submitted' | 'working' | 'completed' | 'failed'
-    message?: any
+    state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled'
+    message?: A2AMessage
   }
   artifact?: {
     artifactId: string
     name?: string
     description?: string
-    parts: Array<{
-      kind: 'text' | 'file' | 'data'
-      text?: string
-      file?: {
-        name: string
-        mimeType: string
-        bytes?: string
-        uri?: string
-      }
-      data?: Record<string, any>
-    }>
+    parts: A2AMessagePart[]
   }
+  final?: boolean
 }
 
 export class A2AClient {
-  private agentUrl: string
+  private baseUrl: string
+  private jsonRpcUrl: string
   private apiKey: string
   private agentCard: AgentCard | null = null
 
   constructor(agentUrl: string, apiKey: string = '') {
     // Normalize URL
-    this.agentUrl = agentUrl.replace(/\/$/, '')
+    this.baseUrl = agentUrl.replace(/\/$/, '')
+    // JSON-RPC endpoint per A2A guide
+    this.jsonRpcUrl = `${this.baseUrl}/jsonrpc/`
     this.apiKey = apiKey
   }
 
   async initialize(): Promise<AgentCard> {
-    const cardUrl = `${this.agentUrl}/.well-known/agent-card.json`
-
-    const response = await fetch(cardUrl, {
+    // Agent card can be at root or .well-known, try root first per guide
+    const response = await fetch(this.baseUrl, {
       method: 'GET',
       headers: {
         'Accept': 'application/json'
@@ -59,10 +91,23 @@ export class A2AClient {
     })
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch agent card: ${response.status} ${response.statusText}`)
-    }
+      // Fallback to .well-known
+      const fallbackUrl = `${this.baseUrl}/.well-known/agent-card.json`
+      const fallbackResponse = await fetch(fallbackUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
+      })
 
-    this.agentCard = await response.json()
+      if (!fallbackResponse.ok) {
+        throw new Error(`Failed to fetch agent card: ${response.status} ${response.statusText}`)
+      }
+
+      this.agentCard = await fallbackResponse.json()
+    } else {
+      this.agentCard = await response.json()
+    }
 
     if (!this.agentCard?.name || !this.agentCard?.url) {
       throw new Error('Invalid agent card: missing required fields')
@@ -75,28 +120,27 @@ export class A2AClient {
     return this.agentCard
   }
 
-  async sendMessage(message: string, skillId?: string): Promise<any> {
+  getJsonRpcUrl(): string {
+    return this.jsonRpcUrl
+  }
+
+  async sendMessage(message: string): Promise<any> {
     const payload = {
       jsonrpc: '2.0',
-      id: crypto.randomUUID(),
       method: 'message/send',
       params: {
         message: {
           role: 'user',
-          messageId: crypto.randomUUID(),
+          messageId: generateUUID(),
           parts: [
             {
               kind: 'text',
               text: message
             }
           ]
-        },
-        configuration: {
-          acceptedOutputModes: ['application/json', 'text/plain', 'image/*'],
-          historyLength: 10,
-          blocking: true
         }
-      }
+      },
+      id: generateUUID()
     }
 
     const headers: Record<string, string> = {
@@ -107,7 +151,7 @@ export class A2AClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`
     }
 
-    const response = await fetch(this.agentUrl, {
+    const response = await fetch(this.jsonRpcUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)
@@ -129,23 +173,20 @@ export class A2AClient {
 
   async streamMessage(
     message: string,
-    onChunk: (chunk: StreamChunk) => void | Promise<void>
+    onChunk: (chunk: StreamChunk) => void | Promise<void>,
+    onComplete?: () => void | Promise<void>
   ): Promise<void> {
     const payload = {
       jsonrpc: '2.0',
-      id: crypto.randomUUID(),
       method: 'message/stream',
       params: {
         message: {
           role: 'user',
-          messageId: crypto.randomUUID(),
+          messageId: generateUUID(),
           parts: [{ kind: 'text', text: message }]
-        },
-        configuration: {
-          acceptedOutputModes: ['application/json', 'text/plain', 'image/*'],
-          historyLength: 10
         }
-      }
+      },
+      id: generateUUID()
     }
 
     const headers: Record<string, string> = {
@@ -157,7 +198,7 @@ export class A2AClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`
     }
 
-    const response = await fetch(this.agentUrl, {
+    const response = await fetch(this.jsonRpcUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)
@@ -204,7 +245,13 @@ export class A2AClient {
               }
 
               if (data.result) {
-                await onChunk(data.result as StreamChunk)
+                const chunk = data.result as StreamChunk
+                await onChunk(chunk)
+
+                // Check if stream is complete
+                if (chunk.final === true && onComplete) {
+                  await onComplete()
+                }
               }
             } catch (parseError) {
               if (parseError instanceof SyntaxError) {
@@ -224,7 +271,12 @@ export class A2AClient {
           try {
             const data = JSON.parse(dataStr)
             if (data.result) {
-              await onChunk(data.result as StreamChunk)
+              const chunk = data.result as StreamChunk
+              await onChunk(chunk)
+              
+              if (chunk.final === true && onComplete) {
+                await onComplete()
+              }
             }
           } catch (e) {
             console.warn('Failed to parse final SSE data:', dataStr)
