@@ -12,7 +12,7 @@ const ChatContainer = dynamic(
 
 export default function EnhancedChatWrapper({ agentUrl, apiKey }: { agentUrl: string; apiKey: string }) {
   const chatInstanceRef = useRef<any>(null)
-  const a2aClient = useRef(new A2AClient(agentUrl, apiKey))
+  const a2aClient = useRef(new A2AClient(agentUrl, { apiKey }))
   const translator = useRef(new A2AToCarbonTranslator())
 
   const handleSendMessage = async (message: string) => {
