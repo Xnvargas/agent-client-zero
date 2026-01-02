@@ -15,6 +15,10 @@ const ChatCustomElement = dynamic(
   }
 )
 
+// =============================================================================
+// TYPE DEFINITIONS
+// =============================================================================
+
 // Extension configuration for A2A requests
 export interface A2AExtensionConfig {
   settings?: {
@@ -61,11 +65,43 @@ interface FullScreenChatProps {
   apiKey?: string
   agentName?: string
   onDisconnect?: () => void
-  // Extension configuration to pass to the agent
   extensions?: A2AExtensionConfig
-  // Whether to show thinking mode indicator
   showThinkingIndicator?: boolean
 }
+
+// =============================================================================
+// CARBON AI CHAT MESSAGE TYPES
+// Based on Carbon AI Chat documentation and source code
+// =============================================================================
+
+// Message response types enum - matches Carbon's MessageResponseTypes
+const MessageResponseTypes = {
+  TEXT: 'text',
+  USER_DEFINED: 'user_defined',
+  INLINE_ERROR: 'inline_error'
+} as const
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Generate a unique ID for streaming responses
+ */
+function generateResponseId(): string {
+  return `response-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
+}
+
+/**
+ * Check if the chat instance has the addMessageChunk method
+ */
+function hasStreamingSupport(instance: any): boolean {
+  return instance?.messaging?.addMessageChunk !== undefined
+}
+
+// =============================================================================
+// MAIN COMPONENT
+// =============================================================================
 
 export default function FullScreenChat({
   agentUrl,
@@ -76,17 +112,217 @@ export default function FullScreenChat({
   showThinkingIndicator = true
 }: FullScreenChatProps) {
   const chatInstanceRef = useRef<any>(null)
-  // Track agent status for UI indicators
-  const [agentStatus, setAgentStatus] = useState<'idle' | 'working' | 'completed' | 'failed'>('idle')
-  const [isThinking, setIsThinking] = useState(false)
+  
+  // Streaming state
+  const [isStreaming, setIsStreaming] = useState(false)
+  const streamingStateRef = useRef<{
+    responseId: string | null
+    accumulatedText: string
+    hasStartedStreaming: boolean
+    supportsChunking: boolean | null
+  }>({
+    responseId: null,
+    accumulatedText: '',
+    hasStartedStreaming: false,
+    supportsChunking: null
+  })
 
-  const handleSendMessage = useCallback(async (message: string) => {
-    // Reset status at the start of a new message
-    setAgentStatus('working')
-    setIsThinking(false)
+  // =============================================================================
+  // STREAMING METHODS
+  // =============================================================================
+
+  /**
+   * Send a partial chunk during streaming
+   */
+  const sendPartialChunk = useCallback((text: string, responseId: string, itemId: string = '1') => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      console.warn('[Streaming] addMessageChunk not available')
+      return false
+    }
 
     try {
-      // Use the proxy endpoint to avoid CORS issues
+      const chunk = {
+        partial_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: text,
+          streaming_metadata: {
+            id: itemId,
+            cancellable: true
+          }
+        },
+        streaming_metadata: {
+          response_id: responseId
+        }
+      }
+      
+      console.log('[Streaming] Sending partial chunk:', { textLength: text.length, responseId })
+      instance.messaging.addMessageChunk(chunk)
+      return true
+    } catch (err) {
+      console.error('[Streaming] Failed to send partial chunk:', err)
+      return false
+    }
+  }, [])
+
+  /**
+   * Send the complete item chunk (optional but good for accessibility)
+   */
+  const sendCompleteItem = useCallback((fullText: string, responseId: string, itemId: string = '1', wasStopped: boolean = false) => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      return false
+    }
+
+    try {
+      const chunk = {
+        complete_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: fullText,
+          streaming_metadata: {
+            id: itemId,
+            stream_stopped: wasStopped
+          }
+        },
+        streaming_metadata: {
+          response_id: responseId
+        }
+      }
+      
+      console.log('[Streaming] Sending complete item:', { textLength: fullText.length, responseId, wasStopped })
+      instance.messaging.addMessageChunk(chunk)
+      return true
+    } catch (err) {
+      console.error('[Streaming] Failed to send complete item:', err)
+      return false
+    }
+  }, [])
+
+  /**
+   * Send the final response chunk (REQUIRED to clear typing indicator)
+   */
+  const sendFinalResponse = useCallback((fullText: string, responseId: string) => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      return false
+    }
+
+    try {
+      const finalResponse = {
+        final_response: {
+          id: responseId,
+          output: {
+            generic: [{
+              response_type: MessageResponseTypes.TEXT,
+              text: fullText
+            }]
+          }
+        }
+      }
+      
+      console.log('[Streaming] Sending final response:', { textLength: fullText.length, responseId })
+      instance.messaging.addMessageChunk(finalResponse)
+      return true
+    } catch (err) {
+      console.error('[Streaming] Failed to send final response:', err)
+      return false
+    }
+  }, [])
+
+  /**
+   * Fallback: Send a complete message using addMessage (non-streaming)
+   */
+  const sendCompleteMessage = useCallback(async (text: string, isError: boolean = false) => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessage) {
+      console.error('[Message] addMessage not available')
+      return false
+    }
+
+    try {
+      const message = {
+        output: {
+          generic: [{
+            response_type: isError ? MessageResponseTypes.INLINE_ERROR : MessageResponseTypes.TEXT,
+            text: text
+          }]
+        }
+      }
+      
+      console.log('[Message] Sending complete message:', { textLength: text.length, isError })
+      await instance.messaging.addMessage(message)
+      return true
+    } catch (err) {
+      console.error('[Message] Failed to send message:', err)
+      return false
+    }
+  }, [])
+
+  /**
+   * Send a user-defined message (for files, structured data, etc.)
+   */
+  const sendUserDefinedMessage = useCallback(async (userDefined: Record<string, unknown>) => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessage) {
+      return false
+    }
+
+    try {
+      const message = {
+        output: {
+          generic: [{
+            response_type: MessageResponseTypes.USER_DEFINED,
+            user_defined: userDefined
+          }]
+        }
+      }
+      
+      await instance.messaging.addMessage(message)
+      return true
+    } catch (err) {
+      console.error('[Message] Failed to send user-defined message:', err)
+      return false
+    }
+  }, [])
+
+  // =============================================================================
+  // MAIN MESSAGE HANDLER
+  // =============================================================================
+
+  const handleSendMessage = useCallback(async (message: string) => {
+    const instance = chatInstanceRef.current
+    
+    // Debug: Log available methods on first call
+    if (streamingStateRef.current.supportsChunking === null) {
+      console.log('[Debug] Chat instance:', instance)
+      console.log('[Debug] Messaging API:', instance?.messaging)
+      console.log('[Debug] Available methods:', Object.keys(instance?.messaging || {}))
+      console.log('[Debug] addMessageChunk exists:', typeof instance?.messaging?.addMessageChunk)
+      console.log('[Debug] addMessage exists:', typeof instance?.messaging?.addMessage)
+      streamingStateRef.current.supportsChunking = hasStreamingSupport(instance)
+    }
+
+    const supportsChunking = streamingStateRef.current.supportsChunking
+
+    // Initialize streaming state
+    const responseId = generateResponseId()
+    const itemId = '1'
+    streamingStateRef.current = {
+      responseId,
+      accumulatedText: '',
+      hasStartedStreaming: false,
+      supportsChunking
+    }
+    setIsStreaming(true)
+
+    console.log('[Handler] Starting message handling:', { 
+      supportsChunking, 
+      responseId,
+      messagePreview: message.substring(0, 50) 
+    })
+
+    try {
+      // Make request to A2A proxy
       const response = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: {
@@ -96,7 +332,6 @@ export default function FullScreenChat({
           agentUrl,
           apiKey,
           message,
-          // Include extension configuration for agent settings
           extensions
         })
       })
@@ -110,31 +345,29 @@ export default function FullScreenChat({
         throw new Error('Response body is null')
       }
 
-      // Process the SSE stream per A2A guide
+      // Process the SSE stream
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
 
-      console.log('[DEBUG] Starting to read SSE stream...')
+      console.log('[Handler] Starting SSE stream processing...')
 
       while (true) {
         const { done, value } = await reader.read()
-        console.log('[DEBUG] Read result - done:', done, 'value length:', value?.length || 0)
+        
         if (done) {
-          console.log('[DEBUG] Stream finished. Remaining buffer:', buffer)
+          console.log('[Handler] Stream finished. Accumulated text length:', streamingStateRef.current.accumulatedText.length)
           break
         }
 
         const chunk = decoder.decode(value, { stream: true })
-        console.log('[DEBUG] Decoded chunk:', chunk)
         buffer += chunk
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
-        console.log('[DEBUG] Split into', lines.length, 'lines, buffer remainder:', buffer.length, 'chars')
 
         for (const line of lines) {
           const trimmedLine = line.trim()
-          console.log('[DEBUG] Processing line:', trimmedLine.substring(0, 100))
+          
           if (trimmedLine.startsWith('data: ')) {
             const dataStr = trimmedLine.slice(6)
             if (!dataStr || dataStr === '[DONE]') continue
@@ -147,158 +380,141 @@ export default function FullScreenChat({
                 error?: { code: number; message: string }
               }
 
-              // Check for errors
+              // Handle JSON-RPC errors
               if (data.error) {
-                console.error('A2A error:', data.error)
-                await chatInstanceRef.current?.messaging.addMessage({
-                  output: {
-                    generic: [{
-                      response_type: 'text',
-                      text: `Error: ${data.error.message}`
-                    }]
-                  }
-                })
+                console.error('[Handler] A2A error:', data.error)
+                const errorText = `Error: ${data.error.message}`
+                
+                if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
+                  // End streaming with error
+                  sendFinalResponse(errorText, responseId)
+                } else {
+                  await sendCompleteMessage(errorText, true)
+                }
                 continue
               }
 
               if (data.result) {
                 const result = data.result
-                console.log('A2A result:', result.kind, result.status?.state, result.final)
-
-                // Update agent status based on stream state
-                if (result.status?.state) {
-                  setAgentStatus(result.status.state as 'working' | 'completed' | 'failed')
-                }
+                console.log('[Handler] A2A result:', { kind: result.kind, state: result.status?.state, final: result.final })
 
                 // Handle status updates with agent messages
                 if (result.kind === 'status-update' && result.status?.message) {
                   const agentMessage = result.status.message
-                  console.log('Agent message parts:', agentMessage.parts)
 
-                  // Extract text from message parts
                   for (const part of agentMessage.parts) {
+                    // Handle text parts
                     if (part.kind === 'text' && part.text) {
-                      console.log('[DEBUG] Attempting to add message to chat UI...')
-                      console.log('[DEBUG] Message text:', part.text)
-
-                      // Detect thinking mode status messages
-                      const isThinkingModeMessage =
-                        part.text.toLowerCase().includes('thinking mode') ||
-                        part.text.toLowerCase().includes("i'll show my reasoning")
-
-                      if (isThinkingModeMessage) {
-                        setIsThinking(true)
-                        console.log('[DEBUG] Thinking mode detected')
+                      const newText = part.text
+                      
+                      if (supportsChunking) {
+                        // STREAMING MODE: Use addMessageChunk
+                        streamingStateRef.current.accumulatedText += newText
+                        streamingStateRef.current.hasStartedStreaming = true
+                        
+                        // Send partial chunk with the new text
+                        sendPartialChunk(newText, responseId, itemId)
+                        
+                      } else {
+                        // FALLBACK MODE: Accumulate text, send at end
+                        streamingStateRef.current.accumulatedText += newText
                       }
-
-                      // Check for error-like messages (e.g., settings not available)
-                      const isErrorMessage =
-                        part.text.toLowerCase().includes('error') ||
-                        part.text.toLowerCase().includes("hasn't been activated") ||
-                        part.text.toLowerCase().includes('not available')
-
-                      try {
-                        // Carbon Chat expects watsonx-style format with output.generic
-                        const messagePayload = {
-                          output: {
-                            generic: [{
-                              response_type: isErrorMessage ? 'user_defined' : 'text',
-                              ...(isErrorMessage
-                                ? {
-                                    user_defined: {
-                                      type: 'status_message',
-                                      messageType: 'warning',
-                                      text: part.text
-                                    }
-                                  }
-                                : { text: part.text }
-                              )
-                            }]
-                          }
-                        }
-                        console.log('[DEBUG] Message payload:', messagePayload)
-
-                        await chatInstanceRef.current?.messaging.addMessage(messagePayload)
-                        console.log('[DEBUG] addMessage completed')
-                      } catch (addError) {
-                        console.error('[DEBUG] addMessage error:', addError)
-                      }
-                    } else if (part.kind === 'file' && part.file) {
-                      await chatInstanceRef.current?.messaging.addMessage({
-                        output: {
-                          generic: [{
-                            response_type: 'user_defined',
-                            user_defined: {
-                              type: 'file_attachment',
-                              fileName: part.file.name,
-                              mimeType: part.file.mimeType,
-                              downloadUrl: part.file.uri || `data:${part.file.mimeType};base64,${part.file.bytes}`
-                            }
-                          }]
-                        }
+                    }
+                    
+                    // Handle file parts
+                    else if (part.kind === 'file' && part.file) {
+                      await sendUserDefinedMessage({
+                        type: 'file_attachment',
+                        fileName: part.file.name,
+                        mimeType: part.file.mimeType,
+                        downloadUrl: part.file.uri || `data:${part.file.mimeType};base64,${part.file.bytes}`
                       })
-                    } else if (part.kind === 'data' && part.data) {
-                      await chatInstanceRef.current?.messaging.addMessage({
-                        output: {
-                          generic: [{
-                            response_type: 'user_defined',
-                            user_defined: {
-                              type: 'structured_data',
-                              data: part.data
-                            }
-                          }]
-                        }
+                    }
+                    
+                    // Handle data parts
+                    else if (part.kind === 'data' && part.data) {
+                      await sendUserDefinedMessage({
+                        type: 'structured_data',
+                        data: part.data
                       })
                     }
                   }
                 }
 
-                // Log status changes
-                if (result.kind === 'status-update') {
-                  console.log('Agent status:', result.status?.state)
-                }
-
                 // Check if stream is complete
                 if (result.final === true) {
-                  console.log('Stream completed with status:', result.status?.state)
-                  setAgentStatus('completed')
-                  setIsThinking(false)
+                  console.log('[Handler] Stream marked as final')
+                  
+                  const finalText = streamingStateRef.current.accumulatedText
+                  
+                  if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
+                    // STREAMING MODE: Send complete_item and final_response
+                    sendCompleteItem(finalText, responseId, itemId, false)
+                    sendFinalResponse(finalText, responseId)
+                  } else if (finalText) {
+                    // FALLBACK MODE: Send accumulated text as single message
+                    await sendCompleteMessage(finalText)
+                  }
+                  
+                  console.log('[Handler] Final response sent, text length:', finalText.length)
                 }
               }
             } catch (parseError) {
               if (!(parseError instanceof SyntaxError)) {
                 throw parseError
               }
-              console.warn('Failed to parse SSE data:', dataStr)
+              console.warn('[Handler] Failed to parse SSE data:', dataStr.substring(0, 100))
             }
           }
         }
       }
-    } catch (error) {
-      console.error('Error sending message:', error)
-      setAgentStatus('failed')
-      setIsThinking(false)
-      await chatInstanceRef.current?.messaging.addMessage({
-        output: {
-          generic: [{
-            response_type: 'user_defined',
-            user_defined: {
-              type: 'status_message',
-              messageType: 'error',
-              text: `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
-            }
-          }]
-        }
-      })
-    }
-  }, [agentUrl, apiKey, extensions])
 
-  const renderCustomResponse = useCallback((state: any, instance: any) => {
+      // Handle case where stream ends without explicit final=true
+      const state = streamingStateRef.current
+      if (state.accumulatedText && !state.hasStartedStreaming) {
+        // We accumulated text but never started streaming (fallback mode)
+        console.log('[Handler] Stream ended without final flag, sending accumulated text')
+        await sendCompleteMessage(state.accumulatedText)
+      } else if (supportsChunking && state.hasStartedStreaming) {
+        // Streaming mode: ensure we sent final_response
+        // (This is a safety net - normally final=true should trigger this)
+        console.log('[Handler] Ensuring final_response was sent')
+        sendFinalResponse(state.accumulatedText, responseId)
+      }
+
+    } catch (error) {
+      console.error('[Handler] Error in message handling:', error)
+      
+      const errorMessage = `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
+      
+      if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
+        // End streaming with error
+        sendFinalResponse(errorMessage, streamingStateRef.current.responseId || responseId)
+      } else {
+        await sendCompleteMessage(errorMessage, true)
+      }
+    } finally {
+      setIsStreaming(false)
+      streamingStateRef.current = {
+        responseId: null,
+        accumulatedText: '',
+        hasStartedStreaming: false,
+        supportsChunking: streamingStateRef.current.supportsChunking
+      }
+    }
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage])
+
+  // =============================================================================
+  // CUSTOM RESPONSE RENDERER
+  // =============================================================================
+
+  const renderCustomResponse = useCallback((state: any, _instance: any) => {
     const messageItem = state.messageItem
     const userDefined = messageItem?.user_defined
 
     if (!userDefined) return null
 
+    // Image
     if (userDefined.type === 'image') {
       return (
         <div>
@@ -314,6 +530,7 @@ export default function FullScreenChat({
       )
     }
 
+    // Chart
     if (userDefined.type === 'chart') {
       return (
         <div className="border rounded-lg p-4 bg-white">
@@ -328,6 +545,7 @@ export default function FullScreenChat({
       )
     }
 
+    // File attachment
     if (userDefined.type === 'file_attachment') {
       return (
         <a
@@ -346,6 +564,7 @@ export default function FullScreenChat({
       )
     }
 
+    // Data table
     if (userDefined.type === 'data_table') {
       return (
         <table className="min-w-full border-collapse">
@@ -373,6 +592,7 @@ export default function FullScreenChat({
       )
     }
 
+    // Structured data
     if (userDefined.type === 'structured_data') {
       return (
         <pre className="bg-gray-100 p-4 rounded-lg overflow-x-auto">
@@ -381,7 +601,7 @@ export default function FullScreenChat({
       )
     }
 
-    // Handle status messages (warnings, errors, info)
+    // Status message (warnings, errors, info)
     if (userDefined.type === 'status_message') {
       const bgColor =
         userDefined.messageType === 'error'
@@ -417,17 +637,22 @@ export default function FullScreenChat({
     return null
   }, [])
 
+  // =============================================================================
+  // RENDER
+  // =============================================================================
+
   return (
     <div className="full-screen-chat">
-      {/* Status indicator for agent state */}
-      {showThinkingIndicator && agentStatus === 'working' && (
+      {/* Optional: Custom streaming indicator (Carbon should show its own) */}
+      {showThinkingIndicator && isStreaming && (
         <div className="agent-status-indicator">
           <div className="agent-status-indicator__content">
             <div className="agent-status-indicator__spinner" />
-            <span>{isThinking ? 'Agent is thinking...' : 'Agent is working...'}</span>
+            <span>Agent is responding...</span>
           </div>
         </div>
       )}
+      
       <ChatCustomElement
         className="chat-custom-element"
         debug={true}
@@ -441,16 +666,21 @@ export default function FullScreenChat({
         }}
         onAfterRender={(instance: any) => {
           chatInstanceRef.current = instance
+          
+          // Log available methods for debugging
+          console.log('[Init] Chat instance ready')
+          console.log('[Init] Available messaging methods:', Object.keys(instance?.messaging || {}))
         }}
         renderUserDefinedResponse={renderCustomResponse}
         messaging={{
-          customSendMessage: async (request: any, options: any, instance: any) => {
+          customSendMessage: async (request: any, _options: any, _instance: any) => {
             if (request.input?.text) {
               await handleSendMessage(request.input.text)
             }
           }
         }}
       />
+      
       {onDisconnect && (
         <button
           onClick={onDisconnect}
@@ -463,6 +693,10 @@ export default function FullScreenChat({
     </div>
   )
 }
+
+// =============================================================================
+// UTILITIES
+// =============================================================================
 
 function formatFileSize(bytes?: number): string {
   if (!bytes) return 'Unknown size'
