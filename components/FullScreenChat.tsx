@@ -206,7 +206,14 @@ export default function FullScreenChat({
   const sendFinalResponse = useCallback((fullText: string, responseId: string) => {
     const instance = chatInstanceRef.current
     if (!instance?.messaging?.addMessageChunk) {
+      console.warn('[Streaming] Cannot send final_response - addMessageChunk not available')
       return false
+    }
+
+    // Prevent duplicate final responses
+    if (streamingStateRef.current.finalResponseSent) {
+      console.log('[Streaming] Final response already sent, skipping duplicate')
+      return true
     }
 
     try {
@@ -222,8 +229,9 @@ export default function FullScreenChat({
         }
       }
       
-      console.log('[Streaming] Sending final response:', { textLength: fullText.length, responseId })
+      console.log('[Streaming] ✅ Sending final_response:', { textLength: fullText.length, responseId })
       instance.messaging.addMessageChunk(finalResponse)
+      streamingStateRef.current.finalResponseSent = true
       return true
     } catch (err) {
       console.error('[Streaming] Failed to send final response:', err)
@@ -352,6 +360,7 @@ export default function FullScreenChat({
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let receivedFinalTrue = false
 
       console.log('[Handler] Starting SSE stream processing...')
 
@@ -359,7 +368,13 @@ export default function FullScreenChat({
         const { done, value } = await reader.read()
         
         if (done) {
-          console.log('[Handler] Stream finished. Accumulated text length:', streamingStateRef.current.accumulatedText.length)
+          console.log('[Handler] ⚠️ STREAM READER DONE - Connection closed by server')
+          console.log('[Handler] Stream state at close:', {
+            accumulatedTextLength: streamingStateRef.current.accumulatedText.length,
+            finalResponseSent: streamingStateRef.current.finalResponseSent,
+            hasStartedStreaming: streamingStateRef.current.hasStartedStreaming,
+            receivedFinalTrue
+          })
           break
         }
 
@@ -399,7 +414,12 @@ export default function FullScreenChat({
 
               if (data.result) {
                 const result = data.result
-                console.log('[Handler] A2A result:', { kind: result.kind, state: result.status?.state, final: result.final })
+                console.log('[Handler] A2A result:', { 
+                  kind: result.kind, 
+                  state: result.status?.state, 
+                  final: result.final,
+                  hasMessage: !!result.status?.message
+                })
 
                 // Handle status updates with agent messages
                 if (result.kind === 'status-update' && result.status?.message) {
@@ -444,24 +464,28 @@ export default function FullScreenChat({
                   }
                 }
 
-                // Check if stream is complete
-                if (result.final === true) {
-                  console.log('[Handler] Stream marked as final')
+                // Check if stream is complete (final: true OR state: completed)
+                const isComplete = result.final === true || result.status?.state === 'completed'
+                
+                if (isComplete) {
+                  receivedFinalTrue = true
+                  console.log('[Handler] ✅ Stream marked as complete:', { 
+                    final: result.final, 
+                    state: result.status?.state 
+                  })
                   
                   const finalText = streamingStateRef.current.accumulatedText
                   
                   if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
-                    // STREAMING MODE: Only send final_response (not complete_item to avoid duplicates)
-                    // The final_response includes the text and clears the typing indicator
+                    // STREAMING MODE: Send final_response to clear typing indicator
                     sendFinalResponse(finalText, responseId)
-                    streamingStateRef.current.finalResponseSent = true
-                  } else if (finalText) {
+                  } else if (finalText && !streamingStateRef.current.finalResponseSent) {
                     // FALLBACK MODE: Send accumulated text as single message
                     await sendCompleteMessage(finalText)
                     streamingStateRef.current.finalResponseSent = true
                   }
                   
-                  console.log('[Handler] Final response sent, text length:', finalText.length)
+                  console.log('[Handler] Final response processed, text length:', finalText.length)
                 }
               }
             } catch (parseError) {
@@ -474,17 +498,40 @@ export default function FullScreenChat({
         }
       }
 
-      // Handle case where stream ends without explicit final=true
+      // =======================================================================
+      // CRITICAL: Handle stream end without explicit final=true
+      // This is the fallback that ensures typing indicator is ALWAYS cleared
+      // =======================================================================
       const state = streamingStateRef.current
-      if (state.accumulatedText && !state.hasStartedStreaming && !state.finalResponseSent) {
-        // We accumulated text but never started streaming (fallback mode)
-        console.log('[Handler] Stream ended without final flag, sending accumulated text')
-        await sendCompleteMessage(state.accumulatedText)
-      } else if (supportsChunking && state.hasStartedStreaming && !state.finalResponseSent) {
-        // Streaming mode: ensure we sent final_response
-        // (This is a safety net - normally final=true should trigger this)
-        console.log('[Handler] Ensuring final_response was sent')
-        sendFinalResponse(state.accumulatedText, responseId)
+      
+      console.log('[Handler] Post-stream check:', {
+        accumulatedText: state.accumulatedText.length,
+        hasStartedStreaming: state.hasStartedStreaming,
+        finalResponseSent: state.finalResponseSent,
+        supportsChunking,
+        receivedFinalTrue
+      })
+
+      if (!state.finalResponseSent) {
+        console.log('[Handler] ⚠️ Final response NOT sent yet - triggering fallback')
+        
+        if (state.accumulatedText) {
+          if (supportsChunking && state.hasStartedStreaming) {
+            // Streaming mode: must send final_response to clear typing indicator
+            console.log('[Handler] Sending fallback final_response for streaming mode')
+            sendFinalResponse(state.accumulatedText, responseId)
+          } else {
+            // Non-streaming fallback
+            console.log('[Handler] Sending fallback complete message')
+            await sendCompleteMessage(state.accumulatedText)
+          }
+        } else {
+          // No text accumulated - still need to clear typing indicator
+          console.log('[Handler] No text accumulated, sending empty final response')
+          if (supportsChunking) {
+            sendFinalResponse('', responseId)
+          }
+        }
       }
 
     } catch (error) {
