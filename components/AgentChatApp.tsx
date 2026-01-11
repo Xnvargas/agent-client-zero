@@ -83,6 +83,7 @@ export default function AgentChatApp({
       apiKey={config.apiKey}
       agentName={config.agentCard.name}
       agentDescription={config.agentCard.description}
+      agentIconUrl={config.agentCard.iconUrl}  // Custom icon (defaults to '/bot.svg')
       onDisconnect={handleDisconnect}
       extensions={config.extensions}
       showThinkingIndicator={config.settings?.thinkingEnabled ?? true}

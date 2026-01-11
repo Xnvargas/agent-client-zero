@@ -6,6 +6,7 @@ interface AgentCard {
   name: string
   url: string
   description?: string
+  iconUrl?: string  // Custom icon URL for agent avatar (defaults to '/bot.svg')
   skills?: Array<{ id: string; name: string; description: string }>
   securitySchemes?: Record<string, any>
   extensions?: string[]

@@ -65,6 +65,7 @@ interface FullScreenChatProps {
   apiKey?: string
   agentName?: string
   agentDescription?: string
+  agentIconUrl?: string  // Custom icon URL for agent avatar (use '/bot.svg' for default bot icon)
   onDisconnect?: () => void
   extensions?: A2AExtensionConfig
   showThinkingIndicator?: boolean
@@ -109,6 +110,7 @@ export default function FullScreenChat({
   apiKey = '',
   agentName = 'AI Assistant',
   agentDescription,
+  agentIconUrl = '/bot.svg',  // Default to bot.svg - replace with your own icon
   onDisconnect,
   extensions,
   showThinkingIndicator = true
@@ -142,6 +144,18 @@ export default function FullScreenChat({
   }), [agentName, agentDescription])
 
   // =============================================================================
+  // AGENT PROFILE FOR MESSAGE BUBBLES
+  // This customizes the name and icon shown in agent response bubbles
+  // =============================================================================
+
+  const agentProfile = useMemo(() => ({
+    id: 'a2a-agent',
+    nickname: agentName,           // Shows agent name instead of 'watsonx'
+    user_type: 'bot' as const,     // 'bot' allows custom icon; 'watsonx' uses default gradient
+    profile_picture_url: agentIconUrl  // Custom avatar icon URL
+  }), [agentName, agentIconUrl])
+
+  // =============================================================================
   // HEADER MENU OPTIONS WITH DISCONNECT
   // =============================================================================
 
@@ -158,36 +172,32 @@ export default function FullScreenChat({
   }, [onDisconnect])
 
   // =============================================================================
-  // APPLY STRINGS TO CHAT INSTANCE VIA REDUX
-  // Carbon AI Chat uses Redux for state - dispatch to languagePack with partialState key
+  // APPLY STRINGS TO REDUX STORE
+  // Carbon AI Chat uses Redux internally - dispatching directly ensures strings
+  // persist through config updates that would otherwise reset the language pack.
+  // Requires exposeServiceManagerForTesting={true} on ChatCustomElement.
   // =============================================================================
 
-  const applyStringsToInstance = useCallback(() => {
+  const applyStringsToRedux = useCallback(() => {
     const instance = chatInstanceRef.current
-    if (!instance) return
+    if (!instance?.serviceManager?.store) {
+      console.warn('[Strings] serviceManager.store not available - ensure exposeServiceManagerForTesting={true}')
+      return
+    }
 
     try {
-      // Get the Redux store from Carbon AI Chat's service manager
-      const store = instance.serviceManager?.store
-      if (!store?.dispatch || !store?.getState) {
-        console.warn('[Strings] Redux store not available on instance')
-        return
-      }
+      // Get the current state to access the existing language pack
+      const currentState = instance.serviceManager.store.getState()
+      const currentLanguagePack = currentState?.config?.derived?.languagePack || {}
 
-      // Get current language pack from state
-      const state = store.getState()
-      const currentLanguagePack = state?.config?.derived?.languagePack || {}
+      // Merge custom strings over the current language pack
+      const merged = { ...currentLanguagePack, ...customStrings }
 
-      // Merge custom strings with existing language pack
-      const merged = {
-        ...currentLanguagePack,
-        ...customStrings
-      }
-
-      // Dispatch with partialState key (NOT state) - this is what Carbon's reducer expects
-      store.dispatch({
+      // Dispatch directly to Redux store using the CHANGE_STATE action
+      // This bypasses the config update mechanism that causes the reset
+      instance.serviceManager.store.dispatch({
         type: 'CHANGE_STATE',
-        partialState: {
+        state: {
           config: {
             derived: {
               languagePack: merged
@@ -196,16 +206,20 @@ export default function FullScreenChat({
         }
       })
 
-      console.log('[Strings] Applied custom strings via Redux:', customStrings)
+      console.log('[Strings] Applied custom strings to Redux store:', Object.keys(customStrings))
     } catch (err) {
-      console.warn('[Strings] Failed to apply custom strings to instance:', err)
+      console.error('[Strings] Failed to apply strings to Redux:', err)
     }
   }, [customStrings])
 
   // Re-apply strings when they change and instance is ready
   useEffect(() => {
-    applyStringsToInstance()
-  }, [applyStringsToInstance])
+    // Small delay to ensure the store is initialized
+    const timer = setTimeout(() => {
+      applyStringsToRedux()
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [applyStringsToRedux])
 
   // =============================================================================
   // STREAMING METHODS
@@ -231,11 +245,16 @@ export default function FullScreenChat({
             cancellable: true
           }
         },
+        partial_response: {
+          message_options: {
+            response_user_profile: agentProfile  // Custom agent name and icon
+          }
+        },
         streaming_metadata: {
           response_id: responseId
         }
       }
-      
+
       console.log('[Streaming] Sending partial chunk:', { textLength: text.length, responseId })
       instance.messaging.addMessageChunk(chunk)
       return true
@@ -243,7 +262,7 @@ export default function FullScreenChat({
       console.error('[Streaming] Failed to send partial chunk:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Send the complete item chunk (optional but good for accessibility)
@@ -303,10 +322,13 @@ export default function FullScreenChat({
               response_type: MessageResponseTypes.TEXT,
               text: fullText
             }]
+          },
+          message_options: {
+            response_user_profile: agentProfile  // Custom agent name and icon
           }
         }
       }
-      
+
       console.log('[Streaming] ✅ Sending final_response:', { textLength: fullText.length, responseId })
       instance.messaging.addMessageChunk(finalResponse)
       streamingStateRef.current.finalResponseSent = true
@@ -315,7 +337,7 @@ export default function FullScreenChat({
       console.error('[Streaming] Failed to send final response:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Fallback: Send a complete message using addMessage (non-streaming)
@@ -334,9 +356,12 @@ export default function FullScreenChat({
             response_type: isError ? MessageResponseTypes.INLINE_ERROR : MessageResponseTypes.TEXT,
             text: text
           }]
+        },
+        message_options: {
+          response_user_profile: agentProfile  // Custom agent name and icon
         }
       }
-      
+
       console.log('[Message] Sending complete message:', { textLength: text.length, isError })
       await instance.messaging.addMessage(message)
       return true
@@ -344,7 +369,7 @@ export default function FullScreenChat({
       console.error('[Message] Failed to send message:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Send a user-defined message (for files, structured data, etc.)
@@ -362,16 +387,19 @@ export default function FullScreenChat({
             response_type: MessageResponseTypes.USER_DEFINED,
             user_defined: userDefined
           }]
+        },
+        message_options: {
+          response_user_profile: agentProfile  // Custom agent name and icon
         }
       }
-      
+
       await instance.messaging.addMessage(message)
       return true
     } catch (err) {
       console.error('[Message] Failed to send user-defined message:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   // =============================================================================
   // MAIN MESSAGE HANDLER
@@ -634,12 +662,12 @@ export default function FullScreenChat({
       }
 
       // Re-apply custom strings after message processing
-      // Carbon AI Chat may reset strings after adding messages
+      // Carbon AI Chat config updates reset the language pack - dispatch directly to Redux
       setTimeout(() => {
-        applyStringsToInstance()
+        applyStringsToRedux()
       }, 100)
     }
-  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToInstance])
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToRedux])
 
   // =============================================================================
   // CUSTOM RESPONSE RENDERER
@@ -795,6 +823,7 @@ export default function FullScreenChat({
         debug={true}
         aiEnabled={true}
         openChatByDefault={true}
+        exposeServiceManagerForTesting={true}
         strings={customStrings}
         layout={{
           showFrame: false
@@ -809,9 +838,14 @@ export default function FullScreenChat({
           // Log available methods for debugging
           console.log('[Init] Chat instance ready')
           console.log('[Init] Available messaging methods:', Object.keys(instance?.messaging || {}))
+          console.log('[Init] serviceManager available:', !!instance?.serviceManager)
+          console.log('[Init] store available:', !!instance?.serviceManager?.store)
 
-          // Apply custom strings to the instance after render
-          applyStringsToInstance()
+          // Apply custom strings directly to Redux after render
+          // Small delay to ensure store is fully initialized
+          setTimeout(() => {
+            applyStringsToRedux()
+          }, 50)
         }}
         renderUserDefinedResponse={renderCustomResponse}
         messaging={{
