@@ -65,6 +65,7 @@ interface FullScreenChatProps {
   apiKey?: string
   agentName?: string
   agentDescription?: string
+  agentIconUrl?: string  // Custom icon URL for agent avatar (use '/bot.svg' for default bot icon)
   onDisconnect?: () => void
   extensions?: A2AExtensionConfig
   showThinkingIndicator?: boolean
@@ -109,6 +110,7 @@ export default function FullScreenChat({
   apiKey = '',
   agentName = 'AI Assistant',
   agentDescription,
+  agentIconUrl = '/bot.svg',  // Default to bot.svg - replace with your own icon
   onDisconnect,
   extensions,
   showThinkingIndicator = true
@@ -140,6 +142,18 @@ export default function FullScreenChat({
     ai_slug_description: agentDescription ||
       `${agentName} uses AI to process conversations and provide assistance.`
   }), [agentName, agentDescription])
+
+  // =============================================================================
+  // AGENT PROFILE FOR MESSAGE BUBBLES
+  // This customizes the name and icon shown in agent response bubbles
+  // =============================================================================
+
+  const agentProfile = useMemo(() => ({
+    id: 'a2a-agent',
+    nickname: agentName,           // Shows agent name instead of 'watsonx'
+    user_type: 'bot' as const,     // 'bot' allows custom icon; 'watsonx' uses default gradient
+    profile_picture_url: agentIconUrl  // Custom avatar icon URL
+  }), [agentName, agentIconUrl])
 
   // =============================================================================
   // HEADER MENU OPTIONS WITH DISCONNECT
@@ -181,11 +195,16 @@ export default function FullScreenChat({
             cancellable: true
           }
         },
+        partial_response: {
+          message_options: {
+            response_user_profile: agentProfile  // Custom agent name and icon
+          }
+        },
         streaming_metadata: {
           response_id: responseId
         }
       }
-      
+
       console.log('[Streaming] Sending partial chunk:', { textLength: text.length, responseId })
       instance.messaging.addMessageChunk(chunk)
       return true
@@ -193,7 +212,7 @@ export default function FullScreenChat({
       console.error('[Streaming] Failed to send partial chunk:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Send the complete item chunk (optional but good for accessibility)
@@ -253,10 +272,13 @@ export default function FullScreenChat({
               response_type: MessageResponseTypes.TEXT,
               text: fullText
             }]
+          },
+          message_options: {
+            response_user_profile: agentProfile  // Custom agent name and icon
           }
         }
       }
-      
+
       console.log('[Streaming] ✅ Sending final_response:', { textLength: fullText.length, responseId })
       instance.messaging.addMessageChunk(finalResponse)
       streamingStateRef.current.finalResponseSent = true
@@ -265,7 +287,7 @@ export default function FullScreenChat({
       console.error('[Streaming] Failed to send final response:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Fallback: Send a complete message using addMessage (non-streaming)
@@ -284,9 +306,12 @@ export default function FullScreenChat({
             response_type: isError ? MessageResponseTypes.INLINE_ERROR : MessageResponseTypes.TEXT,
             text: text
           }]
+        },
+        message_options: {
+          response_user_profile: agentProfile  // Custom agent name and icon
         }
       }
-      
+
       console.log('[Message] Sending complete message:', { textLength: text.length, isError })
       await instance.messaging.addMessage(message)
       return true
@@ -294,7 +319,7 @@ export default function FullScreenChat({
       console.error('[Message] Failed to send message:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   /**
    * Send a user-defined message (for files, structured data, etc.)
@@ -312,16 +337,19 @@ export default function FullScreenChat({
             response_type: MessageResponseTypes.USER_DEFINED,
             user_defined: userDefined
           }]
+        },
+        message_options: {
+          response_user_profile: agentProfile  // Custom agent name and icon
         }
       }
-      
+
       await instance.messaging.addMessage(message)
       return true
     } catch (err) {
       console.error('[Message] Failed to send user-defined message:', err)
       return false
     }
-  }, [])
+  }, [agentProfile])
 
   // =============================================================================
   // MAIN MESSAGE HANDLER
