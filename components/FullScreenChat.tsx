@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useRef, useCallback, useState, useMemo } from 'react'
+import { useRef, useCallback, useState, useMemo, useEffect } from 'react'
 
 const ChatCustomElement = dynamic(
   () => import('@carbon/ai-chat').then((mod) => mod.ChatCustomElement),
@@ -170,6 +170,40 @@ export default function FullScreenChat({
       }
     }]
   }, [onDisconnect])
+
+  // =============================================================================
+  // APPLY STRINGS TO CHAT INSTANCE
+  // Carbon AI Chat may reset strings after messages - this ensures persistence
+  // =============================================================================
+
+  const applyStringsToInstance = useCallback(() => {
+    const instance = chatInstanceRef.current
+    if (!instance) return
+
+    try {
+      // Try different methods to apply strings depending on Carbon AI Chat version
+      if (typeof instance.updateStrings === 'function') {
+        instance.updateStrings(customStrings)
+      } else if (instance.strings !== undefined) {
+        // Merge custom strings with existing strings
+        instance.strings = { ...instance.strings, ...customStrings }
+      } else if (instance.config?.strings !== undefined) {
+        instance.config.strings = { ...instance.config.strings, ...customStrings }
+      }
+
+      // Force a re-render if the instance supports it
+      if (typeof instance.requestUpdate === 'function') {
+        instance.requestUpdate()
+      }
+    } catch (err) {
+      console.warn('[Strings] Failed to apply custom strings to instance:', err)
+    }
+  }, [customStrings])
+
+  // Re-apply strings when they change and instance is ready
+  useEffect(() => {
+    applyStringsToInstance()
+  }, [applyStringsToInstance])
 
   // =============================================================================
   // STREAMING METHODS
@@ -610,8 +644,14 @@ export default function FullScreenChat({
         supportsChunking: streamingStateRef.current.supportsChunking,
         finalResponseSent: false
       }
+
+      // Re-apply custom strings after message processing
+      // Carbon AI Chat may reset strings after adding messages
+      setTimeout(() => {
+        applyStringsToInstance()
+      }, 100)
     }
-  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage])
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToInstance])
 
   // =============================================================================
   // CUSTOM RESPONSE RENDERER
@@ -781,6 +821,9 @@ export default function FullScreenChat({
           // Log available methods for debugging
           console.log('[Init] Chat instance ready')
           console.log('[Init] Available messaging methods:', Object.keys(instance?.messaging || {}))
+
+          // Apply custom strings to the instance after render
+          applyStringsToInstance()
         }}
         renderUserDefinedResponse={renderCustomResponse}
         messaging={{
