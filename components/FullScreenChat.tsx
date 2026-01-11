@@ -197,7 +197,7 @@ export default function FullScreenChat({
       // This bypasses the config update mechanism that causes the reset
       instance.serviceManager.store.dispatch({
         type: 'CHANGE_STATE',
-        state: {
+        partialState: {
           config: {
             derived: {
               languagePack: merged
