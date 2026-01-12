@@ -136,6 +136,12 @@ export default function FullScreenChat({
     finalResponseSent: false
   })
 
+  // Abort controller for canceling requests
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Track current A2A task ID for cancellation
+  const currentTaskIdRef = useRef<string | null>(null)
+
   // =============================================================================
   // CUSTOM STRINGS FOR AI EXPLAINED POPUP
   // =============================================================================
@@ -261,6 +267,16 @@ export default function FullScreenChat({
     console.log('[Strings] Store subscription established')
     return unsubscribe
   }, [instanceReady, customStrings, applyStringsToRedux])
+
+  // Cleanup on unmount - cancel any pending requests
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+        abortControllerRef.current = null
+      }
+    }
+  }, [])
 
   // =============================================================================
   // STREAMING METHODS
@@ -442,6 +458,76 @@ export default function FullScreenChat({
     }
   }, [agentProfile])
 
+  /**
+   * Cancel the current streaming request - sends A2A cancel and clears UI
+   */
+  const handleCancelRequest = useCallback(async () => {
+    console.log('[Cancel] Canceling current request')
+
+    // 1. Abort frontend fetch connection
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+
+    // 2. Send A2A task/cancel to backend agent
+    if (currentTaskIdRef.current) {
+      try {
+        await fetch('/api/agent/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentUrl,
+            apiKey,
+            taskId: currentTaskIdRef.current
+          })
+        })
+        console.log('[Cancel] Sent A2A cancel for task:', currentTaskIdRef.current)
+      } catch (e) {
+        console.error('[Cancel] Failed to send A2A cancel:', e)
+      }
+      currentTaskIdRef.current = null
+    }
+
+    // 3. Force clear typing indicator
+    const state = streamingStateRef.current
+    if (state.responseId && !state.finalResponseSent) {
+      const instance = chatInstanceRef.current
+      if (instance?.messaging?.addMessageChunk && state.supportsChunking) {
+        try {
+          const finalResponse = {
+            final_response: {
+              id: state.responseId,
+              output: {
+                generic: [{
+                  response_type: MessageResponseTypes.TEXT,
+                  text: state.accumulatedText || '(Request cancelled)'
+                }]
+              },
+              message_options: {
+                response_user_profile: agentProfile
+              }
+            }
+          }
+          instance.messaging.addMessageChunk(finalResponse)
+          console.log('[Cancel] Sent final_response to clear typing indicator')
+        } catch (e) {
+          console.error('[Cancel] Failed to clear typing indicator:', e)
+        }
+      }
+    }
+
+    // 4. Reset all state
+    streamingStateRef.current = {
+      responseId: null,
+      accumulatedText: '',
+      hasStartedStreaming: false,
+      supportsChunking: streamingStateRef.current.supportsChunking,
+      finalResponseSent: true
+    }
+    setIsStreaming(false)
+  }, [agentUrl, apiKey, agentProfile])
+
   // =============================================================================
   // MAIN MESSAGE HANDLER
   // =============================================================================
@@ -480,12 +566,19 @@ export default function FullScreenChat({
     })
 
     try {
+      // Create abort controller for this request
+      abortControllerRef.current = new AbortController()
+
+      // Reset task ID
+      currentTaskIdRef.current = null
+
       // Make request to A2A proxy
       const response = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: abortControllerRef.current.signal,
         body: JSON.stringify({
           agentUrl,
           apiKey,
@@ -561,12 +654,19 @@ export default function FullScreenChat({
 
               if (data.result) {
                 const result = data.result
-                console.log('[Handler] A2A result:', { 
-                  kind: result.kind, 
-                  state: result.status?.state, 
+                console.log('[Handler] A2A result:', {
+                  kind: result.kind,
+                  state: result.status?.state,
                   final: result.final,
-                  hasMessage: !!result.status?.message
+                  hasMessage: !!result.status?.message,
+                  taskId: result.taskId
                 })
+
+                // Capture taskId for cancellation support
+                if (result.taskId && !currentTaskIdRef.current) {
+                  currentTaskIdRef.current = result.taskId
+                  console.log('[Handler] Captured taskId:', result.taskId)
+                }
 
                 // Handle status updates with agent messages
                 if (result.kind === 'status-update' && result.status?.message) {
@@ -640,6 +740,16 @@ export default function FullScreenChat({
                 throw parseError
               }
               console.warn('[Handler] Failed to parse SSE data:', dataStr.substring(0, 100))
+
+              // Check if this looks like a Python exception (backend error leaked into stream)
+              if (dataStr.includes('Error') || dataStr.includes('Exception') || dataStr.includes('Traceback') || dataStr.includes('AttributeError')) {
+                console.error('[Handler] Backend exception detected in stream:', dataStr.substring(0, 300))
+                // Append error to accumulated text so user sees it
+                const errorPreview = dataStr.substring(0, 500).replace(/[\[\]"]/g, '')
+                if (!streamingStateRef.current.accumulatedText.includes('Backend error:')) {
+                  streamingStateRef.current.accumulatedText += `\n\n⚠️ Backend error: ${errorPreview}`
+                }
+              }
             }
           }
         }
@@ -683,9 +793,16 @@ export default function FullScreenChat({
 
     } catch (error) {
       console.error('[Handler] Error in message handling:', error)
-      
+
+      // Handle user-initiated abort separately
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[Handler] Request was aborted by user')
+        // Typing indicator already cleared by handleCancelRequest
+        return
+      }
+
       const errorMessage = `Sorry, there was an error communicating with the agent: ${error instanceof Error ? error.message : 'Unknown error'}`
-      
+
       if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
         // End streaming with error
         sendFinalResponse(errorMessage, streamingStateRef.current.responseId || responseId)
@@ -693,6 +810,46 @@ export default function FullScreenChat({
         await sendCompleteMessage(errorMessage, true)
       }
     } finally {
+      // Clear abort controller
+      abortControllerRef.current = null
+      currentTaskIdRef.current = null
+
+      // CRITICAL: Ensure typing indicator is ALWAYS cleared
+      const finalState = streamingStateRef.current
+      if (!finalState.finalResponseSent && finalState.responseId) {
+        console.log('[Handler] Finally block: forcing final response to clear typing indicator')
+        const instance = chatInstanceRef.current
+        if (instance?.messaging?.addMessageChunk && finalState.supportsChunking) {
+          try {
+            const finalResponse = {
+              final_response: {
+                id: finalState.responseId,
+                output: {
+                  generic: [{
+                    response_type: MessageResponseTypes.TEXT,
+                    text: finalState.accumulatedText || ''
+                  }]
+                },
+                message_options: {
+                  response_user_profile: agentProfile
+                }
+              }
+            }
+            instance.messaging.addMessageChunk(finalResponse)
+            console.log('[Handler] Finally block: sent final_response successfully')
+          } catch (e) {
+            console.error('[Handler] Finally block: failed to send final response:', e)
+          }
+        } else if (!finalState.supportsChunking && finalState.accumulatedText) {
+          // Fallback for non-chunking mode
+          try {
+            await sendCompleteMessage(finalState.accumulatedText)
+          } catch (e) {
+            console.error('[Handler] Finally block: failed to send complete message:', e)
+          }
+        }
+      }
+
       setIsStreaming(false)
       streamingStateRef.current = {
         responseId: null,
@@ -701,11 +858,8 @@ export default function FullScreenChat({
         supportsChunking: streamingStateRef.current.supportsChunking,
         finalResponseSent: false
       }
-
-      // Note: Custom strings are now maintained via store subscription
-      // which automatically re-applies them when config updates reset them
     }
-  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToRedux])
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToRedux, agentProfile])
 
   // =============================================================================
   // CUSTOM RESPONSE RENDERER
@@ -888,7 +1042,8 @@ export default function FullScreenChat({
             if (request.input?.text) {
               await handleSendMessage(request.input.text)
             }
-          }
+          },
+          onStopStreaming: handleCancelRequest
         }}
       />
     </div>
