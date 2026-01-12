@@ -285,7 +285,7 @@ export default function FullScreenChat({
   /**
    * Send a partial chunk during streaming
    */
-  const sendPartialChunk = useCallback((text: string, responseId: string, itemId: string = '1') => {
+  const sendPartialChunk = useCallback(async (text: string, responseId: string, itemId: string = '1'): Promise<boolean> => {
     const instance = chatInstanceRef.current
     if (!instance?.messaging?.addMessageChunk) {
       console.warn('[Streaming] addMessageChunk not available')
@@ -304,7 +304,7 @@ export default function FullScreenChat({
         },
         partial_response: {
           message_options: {
-            response_user_profile: agentProfile  // Custom agent name and icon
+            response_user_profile: agentProfile
           }
         },
         streaming_metadata: {
@@ -313,7 +313,7 @@ export default function FullScreenChat({
       }
 
       console.log('[Streaming] Sending partial chunk:', { textLength: text.length, responseId })
-      instance.messaging.addMessageChunk(chunk)
+      await instance.messaging.addMessageChunk(chunk)
       return true
     } catch (err) {
       console.error('[Streaming] Failed to send partial chunk:', err)
@@ -357,7 +357,7 @@ export default function FullScreenChat({
   /**
    * Send the final response chunk (REQUIRED to clear typing indicator)
    */
-  const sendFinalResponse = useCallback((fullText: string, responseId: string) => {
+  const sendFinalResponse = useCallback(async (fullText: string, responseId: string): Promise<boolean> => {
     const instance = chatInstanceRef.current
     if (!instance?.messaging?.addMessageChunk) {
       console.warn('[Streaming] Cannot send final_response - addMessageChunk not available')
@@ -381,14 +381,15 @@ export default function FullScreenChat({
             }]
           },
           message_options: {
-            response_user_profile: agentProfile  // Custom agent name and icon
+            response_user_profile: agentProfile
           }
         }
       }
 
       console.log('[Streaming] ✅ Sending final_response:', { textLength: fullText.length, responseId })
-      instance.messaging.addMessageChunk(finalResponse)
+      await instance.messaging.addMessageChunk(finalResponse)
       streamingStateRef.current.finalResponseSent = true
+      console.log('[Streaming] ✅ final_response sent successfully')
       return true
     } catch (err) {
       console.error('[Streaming] Failed to send final response:', err)
@@ -399,7 +400,7 @@ export default function FullScreenChat({
   /**
    * Fallback: Send a complete message using addMessage (non-streaming)
    */
-  const sendCompleteMessage = useCallback(async (text: string, isError: boolean = false) => {
+  const sendCompleteMessage = useCallback(async (text: string, isError: boolean = false): Promise<boolean> => {
     const instance = chatInstanceRef.current
     if (!instance?.messaging?.addMessage) {
       console.error('[Message] addMessage not available')
@@ -415,12 +416,18 @@ export default function FullScreenChat({
           }]
         },
         message_options: {
-          response_user_profile: agentProfile  // Custom agent name and icon
+          response_user_profile: agentProfile
         }
       }
 
       console.log('[Message] Sending complete message:', { textLength: text.length, isError })
       await instance.messaging.addMessage(message)
+
+      // Explicitly decrease loading counter to clear any pending state
+      if (instance.updateIsChatLoadingCounter) {
+        instance.updateIsChatLoadingCounter('decrease')
+      }
+
       return true
     } catch (err) {
       console.error('[Message] Failed to send message:', err)
@@ -491,8 +498,8 @@ export default function FullScreenChat({
 
     // 3. Force clear typing indicator
     const state = streamingStateRef.current
+    const instance = chatInstanceRef.current
     if (state.responseId && !state.finalResponseSent) {
-      const instance = chatInstanceRef.current
       if (instance?.messaging?.addMessageChunk && state.supportsChunking) {
         try {
           const finalResponse = {
@@ -509,7 +516,7 @@ export default function FullScreenChat({
               }
             }
           }
-          instance.messaging.addMessageChunk(finalResponse)
+          await instance.messaging.addMessageChunk(finalResponse)
           console.log('[Cancel] Sent final_response to clear typing indicator')
         } catch (e) {
           console.error('[Cancel] Failed to clear typing indicator:', e)
@@ -517,7 +524,17 @@ export default function FullScreenChat({
       }
     }
 
-    // 4. Reset all state
+    // 4. Clear loading counter
+    if (instance?.updateIsChatLoadingCounter) {
+      try {
+        instance.updateIsChatLoadingCounter('decrease')
+        console.log('[Cancel] Decreased loading counter')
+      } catch (e) {
+        // Counter might already be at minimum
+      }
+    }
+
+    // 5. Reset all state
     streamingStateRef.current = {
       responseId: null,
       accumulatedText: '',
@@ -645,7 +662,7 @@ export default function FullScreenChat({
                 
                 if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
                   // End streaming with error
-                  sendFinalResponse(errorText, responseId)
+                  await sendFinalResponse(errorText, responseId)
                 } else {
                   await sendCompleteMessage(errorText, true)
                 }
@@ -683,7 +700,7 @@ export default function FullScreenChat({
                         streamingStateRef.current.hasStartedStreaming = true
                         
                         // Send partial chunk with the new text
-                        sendPartialChunk(newText, responseId, itemId)
+                        await sendPartialChunk(newText, responseId, itemId)
                         
                       } else {
                         // FALLBACK MODE: Accumulate text, send at end
@@ -725,7 +742,7 @@ export default function FullScreenChat({
                   
                   if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
                     // STREAMING MODE: Send final_response to clear typing indicator
-                    sendFinalResponse(finalText, responseId)
+                    await sendFinalResponse(finalText, responseId)
                   } else if (finalText && !streamingStateRef.current.finalResponseSent) {
                     // FALLBACK MODE: Send accumulated text as single message
                     await sendCompleteMessage(finalText)
@@ -776,7 +793,7 @@ export default function FullScreenChat({
           if (supportsChunking && state.hasStartedStreaming) {
             // Streaming mode: must send final_response to clear typing indicator
             console.log('[Handler] Sending fallback final_response for streaming mode')
-            sendFinalResponse(state.accumulatedText, responseId)
+            await sendFinalResponse(state.accumulatedText, responseId)
           } else {
             // Non-streaming fallback
             console.log('[Handler] Sending fallback complete message')
@@ -786,7 +803,7 @@ export default function FullScreenChat({
           // No text accumulated - still need to clear typing indicator
           console.log('[Handler] No text accumulated, sending empty final response')
           if (supportsChunking) {
-            sendFinalResponse('', responseId)
+            await sendFinalResponse('', responseId)
           }
         }
       }
@@ -805,7 +822,7 @@ export default function FullScreenChat({
 
       if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
         // End streaming with error
-        sendFinalResponse(errorMessage, streamingStateRef.current.responseId || responseId)
+        await sendFinalResponse(errorMessage, streamingStateRef.current.responseId || responseId)
       } else {
         await sendCompleteMessage(errorMessage, true)
       }
@@ -835,18 +852,28 @@ export default function FullScreenChat({
                 }
               }
             }
-            instance.messaging.addMessageChunk(finalResponse)
+            await instance.messaging.addMessageChunk(finalResponse)
             console.log('[Handler] Finally block: sent final_response successfully')
           } catch (e) {
             console.error('[Handler] Finally block: failed to send final response:', e)
           }
         } else if (!finalState.supportsChunking && finalState.accumulatedText) {
-          // Fallback for non-chunking mode
           try {
             await sendCompleteMessage(finalState.accumulatedText)
           } catch (e) {
             console.error('[Handler] Finally block: failed to send complete message:', e)
           }
+        }
+      }
+
+      // Explicitly clear loading counter
+      const instance = chatInstanceRef.current
+      if (instance?.updateIsChatLoadingCounter) {
+        try {
+          instance.updateIsChatLoadingCounter('decrease')
+          console.log('[Handler] Finally block: decreased loading counter')
+        } catch (e) {
+          // Counter might already be at minimum
         }
       }
 
@@ -1027,17 +1054,50 @@ export default function FullScreenChat({
         onAfterRender={(instance: any) => {
           chatInstanceRef.current = instance
 
-          // Log available methods for debugging
           console.log('[Init] Chat instance ready')
           console.log('[Init] Available messaging methods:', Object.keys(instance?.messaging || {}))
           console.log('[Init] serviceManager available:', !!instance?.serviceManager)
-          console.log('[Init] store available:', !!instance?.serviceManager?.store)
+          console.log('[Init] updateIsChatLoadingCounter available:', !!instance?.updateIsChatLoadingCounter)
+
+          // Clear any stale loading/streaming state on mount
+          try {
+            // Reset loading counter to zero state
+            if (instance?.updateIsChatLoadingCounter) {
+              // Decrease multiple times to ensure counter reaches zero
+              for (let i = 0; i < 5; i++) {
+                try {
+                  instance.updateIsChatLoadingCounter('decrease')
+                } catch (e) {
+                  // Counter might already be at zero
+                  break
+                }
+              }
+              console.log('[Init] Cleared loading counter')
+            }
+
+            // Clear any pending streaming state by sending an empty final response
+            if (instance?.messaging?.addMessageChunk) {
+              instance.messaging.addMessageChunk({
+                final_response: {
+                  id: 'init-clear-' + Date.now(),
+                  output: { generic: [] }
+                }
+              }).catch(() => {
+                // Ignore errors - there might not be any pending stream
+              })
+              console.log('[Init] Sent clearing final_response')
+            }
+          } catch (e) {
+            console.log('[Init] Could not clear pending state:', e)
+          }
 
           // Mark instance as ready - this triggers the store subscription
           setInstanceReady(true)
         }}
         renderUserDefinedResponse={renderCustomResponse}
         messaging={{
+          skipWelcome: true,
+          messageLoadingIndicatorTimeoutSecs: 0,
           customSendMessage: async (request: any, _options: any, _instance: any) => {
             if (request.input?.text) {
               await handleSendMessage(request.input.text)
