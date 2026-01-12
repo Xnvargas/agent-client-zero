@@ -41,6 +41,10 @@ interface A2AMessagePart {
     uri?: string
   }
   data?: Record<string, unknown>
+  metadata?: {
+    content_type?: 'thinking' | 'response' | string
+    [key: string]: unknown
+  }
 }
 
 interface A2AMessage {
@@ -69,6 +73,32 @@ interface FullScreenChatProps {
   onDisconnect?: () => void
   extensions?: A2AExtensionConfig
   showThinkingIndicator?: boolean
+}
+
+// =============================================================================
+// CHAIN OF THOUGHT & REASONING TYPES
+// Based on Carbon AI Chat message_options
+// =============================================================================
+
+enum ChainOfThoughtStepStatus {
+  IN_PROGRESS = 'in_progress',
+  SUCCESS = 'success',
+  ERROR = 'error'
+}
+
+interface ReasoningStep {
+  title: string
+  content?: string
+  open_state?: 'open' | 'close' | 'default'
+}
+
+interface ChainOfThoughtStep {
+  title: string
+  description?: string
+  tool_name?: string
+  request?: { args: any }
+  response?: { content: any }
+  status: ChainOfThoughtStepStatus
 }
 
 // =============================================================================
@@ -122,6 +152,10 @@ export default function FullScreenChat({
 
   // Streaming state
   const [isStreaming, setIsStreaming] = useState(false)
+
+  // A2A to Carbon message_options state
+  const [reasoningSteps, setReasoningSteps] = useState<ReasoningStep[]>([])
+  const [chainOfThought, setChainOfThought] = useState<ChainOfThoughtStep[]>([])
   const streamingStateRef = useRef<{
     responseId: string | null
     accumulatedText: string
@@ -464,6 +498,96 @@ export default function FullScreenChat({
   }, [agentProfile])
 
   /**
+   * Push reasoning steps to Carbon via message_options
+   * Used for thinking/reasoning content from A2A agents
+   */
+  const pushReasoningSteps = useCallback(async (
+    responseId: string,
+    steps: ReasoningStep[],
+    itemId: string = '1'
+  ): Promise<boolean> => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      console.warn('[Reasoning] addMessageChunk not available')
+      return false
+    }
+
+    try {
+      const chunk = {
+        partial_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: '',  // Don't show thinking as main text
+          streaming_metadata: {
+            id: itemId
+          }
+        },
+        partial_response: {
+          message_options: {
+            response_user_profile: agentProfile,
+            reasoning: {
+              steps
+            }
+          }
+        },
+        streaming_metadata: {
+          response_id: responseId
+        }
+      }
+
+      console.log('[Reasoning] Pushing reasoning steps:', { count: steps.length, responseId })
+      await instance.messaging.addMessageChunk(chunk)
+      return true
+    } catch (err) {
+      console.error('[Reasoning] Failed to push reasoning steps:', err)
+      return false
+    }
+  }, [agentProfile])
+
+  /**
+   * Push chain of thought to Carbon via message_options
+   * Used for tool calls and their results from A2A agents
+   */
+  const pushChainOfThought = useCallback(async (
+    responseId: string,
+    steps: ChainOfThoughtStep[],
+    itemId: string = '1'
+  ): Promise<boolean> => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      console.warn('[ChainOfThought] addMessageChunk not available')
+      return false
+    }
+
+    try {
+      const chunk = {
+        partial_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: '',  // Don't show CoT as main text
+          streaming_metadata: {
+            id: itemId
+          }
+        },
+        partial_response: {
+          message_options: {
+            response_user_profile: agentProfile,
+            chain_of_thought: steps
+          }
+        },
+        streaming_metadata: {
+          response_id: responseId
+        }
+      }
+
+      console.log('[ChainOfThought] Pushing chain of thought:', { count: steps.length, responseId })
+      await instance.messaging.addMessageChunk(chunk)
+      return true
+    } catch (err) {
+      console.error('[ChainOfThought] Failed to push chain of thought:', err)
+      return false
+    }
+  }, [agentProfile])
+
+  /**
    * Cancel the current streaming request - sends A2A cancel and clears UI
    */
   const handleCancelRequest = useCallback(async () => {
@@ -563,6 +687,10 @@ export default function FullScreenChat({
       finalResponseSent: false
     }
     setIsStreaming(true)
+
+    // Reset A2A to Carbon message_options state for new message
+    setReasoningSteps([])
+    setChainOfThought([])
 
     console.log('[Handler] Starting message handling:', { 
       supportsChunking, 
@@ -678,24 +806,96 @@ export default function FullScreenChat({
                   const agentMessage = result.status.message
 
                   for (const part of agentMessage.parts) {
-                    // Handle text parts
-                    if (part.kind === 'text' && part.text) {
+                    const contentType = part.metadata?.content_type
+
+                    // Handle thinking/reasoning content → Carbon reasoning.steps
+                    if (contentType === 'thinking' && part.kind === 'text' && part.text) {
+                      const newStep: ReasoningStep = {
+                        title: 'Reasoning',
+                        content: part.text,
+                        open_state: 'default'
+                      }
+
+                      // Update state and push to Carbon
+                      setReasoningSteps(prev => {
+                        const updatedSteps = [...prev, newStep]
+                        // Push reasoning steps to Carbon
+                        if (supportsChunking) {
+                          pushReasoningSteps(responseId, updatedSteps, itemId)
+                        }
+                        return updatedSteps
+                      })
+
+                      console.log('[Handler] Added reasoning step:', { textLength: part.text.length })
+                    }
+
+                    // Handle tool call start → Carbon chain_of_thought (IN_PROGRESS)
+                    else if (part.kind === 'data' && part.data?.type === 'tool_call') {
+                      const toolData = part.data as { tool_name?: string; args?: any; type: string }
+                      const cotStep: ChainOfThoughtStep = {
+                        title: toolData.tool_name || 'Tool Call',
+                        description: `Calling ${toolData.tool_name || 'tool'}`,
+                        tool_name: toolData.tool_name,
+                        request: { args: toolData.args },
+                        status: ChainOfThoughtStepStatus.IN_PROGRESS
+                      }
+
+                      // Update state and push to Carbon
+                      setChainOfThought(prev => {
+                        const updatedSteps = [...prev, cotStep]
+                        // Push chain of thought to Carbon
+                        if (supportsChunking) {
+                          pushChainOfThought(responseId, updatedSteps, itemId)
+                        }
+                        return updatedSteps
+                      })
+
+                      console.log('[Handler] Added tool call:', { toolName: toolData.tool_name })
+                    }
+
+                    // Handle tool result → Update chain_of_thought step to SUCCESS
+                    else if (part.kind === 'data' && part.data?.type === 'tool_result') {
+                      const resultData = part.data as { tool_name?: string; result_preview?: any; type: string }
+
+                      // Update the matching CoT step with result
+                      setChainOfThought(prev => {
+                        const updatedSteps = prev.map(step =>
+                          step.tool_name === resultData.tool_name && step.status === ChainOfThoughtStepStatus.IN_PROGRESS
+                            ? {
+                                ...step,
+                                response: { content: resultData.result_preview },
+                                status: ChainOfThoughtStepStatus.SUCCESS
+                              }
+                            : step
+                        )
+                        // Push updated chain of thought to Carbon
+                        if (supportsChunking) {
+                          pushChainOfThought(responseId, updatedSteps, itemId)
+                        }
+                        return updatedSteps
+                      })
+
+                      console.log('[Handler] Updated tool result:', { toolName: resultData.tool_name })
+                    }
+
+                    // Handle final response text (content_type === 'response' or regular text)
+                    else if (part.kind === 'text' && part.text) {
                       const newText = part.text
-                      
+
                       if (supportsChunking) {
                         // STREAMING MODE: Use addMessageChunk
                         streamingStateRef.current.accumulatedText += newText
                         streamingStateRef.current.hasStartedStreaming = true
-                        
+
                         // Send partial chunk with the new text
                         await sendPartialChunk(newText, responseId, itemId)
-                        
+
                       } else {
                         // FALLBACK MODE: Accumulate text, send at end
                         streamingStateRef.current.accumulatedText += newText
                       }
                     }
-                    
+
                     // Handle file parts
                     else if (part.kind === 'file' && part.file) {
                       await sendUserDefinedMessage({
@@ -705,9 +905,10 @@ export default function FullScreenChat({
                         downloadUrl: part.file.uri || `data:${part.file.mimeType};base64,${part.file.bytes}`
                       })
                     }
-                    
-                    // Handle data parts
-                    else if (part.kind === 'data' && part.data) {
+
+                    // Handle other data parts (not tool_call or tool_result)
+                    else if (part.kind === 'data' && part.data &&
+                             part.data.type !== 'tool_call' && part.data.type !== 'tool_result') {
                       await sendUserDefinedMessage({
                         type: 'structured_data',
                         data: part.data
@@ -866,7 +1067,7 @@ export default function FullScreenChat({
         finalResponseSent: false
       }
     }
-  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToRedux, agentProfile])
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, applyStringsToRedux, agentProfile, pushReasoningSteps, pushChainOfThought])
 
   // =============================================================================
   // CUSTOM RESPONSE RENDERER
