@@ -423,10 +423,8 @@ export default function FullScreenChat({
       console.log('[Message] Sending complete message:', { textLength: text.length, isError })
       await instance.messaging.addMessage(message)
 
-      // Explicitly decrease loading counter to clear any pending state
-      if (instance.updateIsChatLoadingCounter) {
-        instance.updateIsChatLoadingCounter('decrease')
-      }
+      // Mark final response as sent to prevent double-clearing
+      streamingStateRef.current.finalResponseSent = true
 
       return true
     } catch (err) {
@@ -524,17 +522,7 @@ export default function FullScreenChat({
       }
     }
 
-    // 4. Clear loading counter
-    if (instance?.updateIsChatLoadingCounter) {
-      try {
-        instance.updateIsChatLoadingCounter('decrease')
-        console.log('[Cancel] Decreased loading counter')
-      } catch (e) {
-        // Counter might already be at minimum
-      }
-    }
-
-    // 5. Reset all state
+    // 4. Reset all state (don't manipulate loading counter - let Carbon handle it)
     streamingStateRef.current = {
       responseId: null,
       accumulatedText: '',
@@ -866,16 +854,8 @@ export default function FullScreenChat({
         }
       }
 
-      // Explicitly clear loading counter
-      const instance = chatInstanceRef.current
-      if (instance?.updateIsChatLoadingCounter) {
-        try {
-          instance.updateIsChatLoadingCounter('decrease')
-          console.log('[Handler] Finally block: decreased loading counter')
-        } catch (e) {
-          // Counter might already be at minimum
-        }
-      }
+      // CRITICAL: Ensure typing indicator is ALWAYS cleared via final_response
+      // (Don't manually manipulate loading counter - Carbon handles this internally)
 
       setIsStreaming(false)
       streamingStateRef.current = {
@@ -1059,20 +1039,12 @@ export default function FullScreenChat({
           console.log('[Init] serviceManager available:', !!instance?.serviceManager)
           console.log('[Init] updateIsChatLoadingCounter available:', !!instance?.updateIsChatLoadingCounter)
 
-          // Clear any stale loading/streaming state on mount
+          // Clear any stale loading/streaming state on mount using 'reset'
+          // NOTE: Don't loop 'decrease' - use 'reset' to avoid console errors
           try {
-            // Reset loading counter to zero state
             if (instance?.updateIsChatLoadingCounter) {
-              // Decrease multiple times to ensure counter reaches zero
-              for (let i = 0; i < 5; i++) {
-                try {
-                  instance.updateIsChatLoadingCounter('decrease')
-                } catch (e) {
-                  // Counter might already be at zero
-                  break
-                }
-              }
-              console.log('[Init] Cleared loading counter')
+              instance.updateIsChatLoadingCounter('reset')
+              console.log('[Init] Reset loading counter')
             }
 
             // Clear any pending streaming state by sending an empty final response
