@@ -32,6 +32,7 @@ interface A2AArtifact {
   name?: string
   description?: string
   parts: A2APart[]
+  metadata?: Record<string, unknown>  // Extension metadata (citations, trajectory, etc.)
 }
 
 interface A2ATask {
@@ -89,6 +90,7 @@ export interface CarbonMessage {
     steps: ChainOfThoughtStep[]
   }
   user_defined?: Record<string, any>
+  metadata?: Record<string, unknown>  // Extension metadata (citations, trajectory, etc.)
 }
 
 // ==================== Translator Class ====================
@@ -114,23 +116,42 @@ export class A2AToCarbonTranslator {
   /**
    * Translate a single streaming A2A part to a Carbon message
    * Used for real-time streaming updates
+   * @param part The A2A part to translate
+   * @param metadata Optional extension metadata from the artifact
    */
-  translateStreamingPart(part: A2APart): CarbonMessage | null {
-    return this.translatePart(part, null)
+  translateStreamingPart(part: A2APart, metadata?: Record<string, unknown>): CarbonMessage | null {
+    // Create a minimal artifact wrapper to preserve metadata
+    const artifact: A2AArtifact | null = metadata ? {
+      artifactId: '',
+      parts: [],
+      metadata
+    } : null
+    return this.translatePart(part, artifact)
   }
 
   /**
    * Translate an A2A part to a Carbon message
    */
   private translatePart(part: A2APart, artifact: A2AArtifact | null): CarbonMessage | null {
+    // Preserve metadata from artifact if present
+    const extensionMetadata = artifact?.metadata
+
     // Handle parts with metadata (thinking, response, status)
     if (part.metadata?.content_type) {
-      return this.translateMetadataPart(part)
+      const message = this.translateMetadataPart(part)
+      if (message && extensionMetadata) {
+        message.metadata = extensionMetadata
+      }
+      return message
     }
 
     // Handle data parts (tool_call, tool_result)
     if (part.kind === 'data' && part.data?.type) {
-      return this.translateDataPart(part)
+      const message = this.translateDataPart(part)
+      if (message && extensionMetadata) {
+        message.metadata = extensionMetadata
+      }
+      return message
     }
 
     // Handle standard part types
@@ -138,14 +159,23 @@ export class A2AToCarbonTranslator {
       case 'text':
         return {
           response_type: 'text',
-          text: part.text
+          text: part.text,
+          metadata: extensionMetadata
         }
 
       case 'file':
-        return this.translateFilePart(part, artifact)
+        const fileMessage = this.translateFilePart(part, artifact)
+        if (fileMessage && extensionMetadata) {
+          fileMessage.metadata = extensionMetadata
+        }
+        return fileMessage
 
       case 'data':
-        return this.translateGenericDataPart(part)
+        const dataMessage = this.translateGenericDataPart(part)
+        if (dataMessage && extensionMetadata) {
+          dataMessage.metadata = extensionMetadata
+        }
+        return dataMessage
 
       default:
         return null
