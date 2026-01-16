@@ -19,7 +19,7 @@ import { useRef, useCallback } from 'react'
 import { A2AClient, StreamChunk, A2AMessagePart, extractCitations, type Citation } from '@/lib/a2a'
 import {
   A2AToCarbonTranslator,
-  CarbonMessage,
+  LegacyCarbonMessage,
   ChainOfThoughtStepStatus
 } from '@/lib/translator/a2a-to-carbon'
 import { CitationRenderer } from './renderers'
@@ -59,7 +59,7 @@ export default function EnhancedChatWrapper({ agentUrl, apiKey }: EnhancedChatWr
   /**
    * Add a Carbon message to the chat UI
    */
-  const addCarbonMessage = useCallback(async (carbonMessage: CarbonMessage) => {
+  const addCarbonMessage = useCallback(async (carbonMessage: LegacyCarbonMessage) => {
     if (!chatInstanceRef.current?.messaging) {
       console.warn('Chat instance not ready')
       return null
@@ -77,7 +77,7 @@ export default function EnhancedChatWrapper({ agentUrl, apiKey }: EnhancedChatWr
   /**
    * Update an existing message in the chat UI
    */
-  const updateCarbonMessage = useCallback(async (messageId: string, carbonMessage: CarbonMessage) => {
+  const updateCarbonMessage = useCallback(async (messageId: string, carbonMessage: LegacyCarbonMessage) => {
     if (!chatInstanceRef.current?.messaging) {
       console.warn('Chat instance not ready')
       return
@@ -97,9 +97,14 @@ export default function EnhancedChatWrapper({ agentUrl, apiKey }: EnhancedChatWr
    * @param part The A2A part to process
    * @param artifactMetadata Optional metadata from the artifact (for citations, trajectory, etc.)
    */
-  const processStreamingPart = useCallback(async (part: A2APartWithMetadata, artifactMetadata?: Record<string, unknown>) => {
-    // Check for metadata-based content types (thinking, response, status)
-    if (part.metadata?.content_type) {
+  const processStreamingPart = useCallback(async (
+    part: A2APartWithMetadata,
+    artifactMetadata?: Record<string, unknown>
+  ) => {
+    // Check for content_type in part metadata (thinking, response, status)
+    const contentType = part.metadata?.content_type
+
+    if (contentType === 'thinking' && part.kind === 'text' && part.text) {
       const carbonMessage = translator.current.translateStreamingPart(part as any, artifactMetadata)
       if (carbonMessage) {
         await addCarbonMessage(carbonMessage)
@@ -124,17 +129,6 @@ export default function EnhancedChatWrapper({ agentUrl, apiKey }: EnhancedChatWr
         }
         return
       }
-      return
-    }
-
-    // Check for content_type in part metadata
-    if (part.metadata?.content_type) {
-      const carbonMessage = translator.current.translateStreamingPart(part, artifactMetadata)
-      if (carbonMessage) {
-        await addCarbonMessage(carbonMessage)
-      }
-      return
-    }
 
       if (dataType === 'tool_result') {
         const toolName = (part.data as any).tool_name || 'tool'
@@ -163,6 +157,16 @@ export default function EnhancedChatWrapper({ agentUrl, apiKey }: EnhancedChatWr
       if (carbonMessage) {
         await addCarbonMessage(carbonMessage)
       }
+      return
+    }
+
+    // Handle file parts
+    if (part.kind === 'file' && part.file) {
+      const carbonMessage = translator.current.translateStreamingPart(part as any, artifactMetadata)
+      if (carbonMessage) {
+        await addCarbonMessage(carbonMessage)
+      }
+      return
     }
   }, [addCarbonMessage, updateCarbonMessage])
 

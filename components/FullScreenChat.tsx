@@ -13,7 +13,17 @@ import {
   type ErrorMetadata,
   type FormRequestMetadata,
 } from '@/lib/a2a'
-import { CitationRenderer, ErrorRenderer, FormRenderer } from '@/components/renderers'
+import {
+  A2AToCarbonTranslator,
+  createTranslator,
+  isFinalResponse,
+  isPartialItem,
+  isCompleteItem,
+  type CarbonStreamChunk,
+  type ReasoningStep as TranslatorReasoningStep,
+  type ChainOfThoughtStep as TranslatorChainOfThoughtStep,
+} from '@/lib/translator'
+import { CitationRenderer, ErrorRenderer, FormRenderer } from '@/components/renderers/index'
 
 const ChatCustomElement = dynamic(
   () => import('@carbon/ai-chat').then((mod) => mod.ChatCustomElement),
@@ -198,6 +208,9 @@ export default function FullScreenChat({
   // Track current A2A task ID for cancellation
   const currentTaskIdRef = useRef<string | null>(null)
 
+  // A2A to Carbon translator instance
+  const translatorRef = useRef<A2AToCarbonTranslator | null>(null)
+
   // =============================================================================
   // CUSTOM STRINGS FOR AI EXPLAINED POPUP
   // =============================================================================
@@ -333,6 +346,12 @@ export default function FullScreenChat({
       }
     }
   }, [])
+
+  // Initialize translator when agent profile is available
+  useEffect(() => {
+    translatorRef.current = createTranslator(agentName, agentIconUrl)
+    console.log('[Translator] Initialized with agent:', agentName)
+  }, [agentName, agentIconUrl])
 
   // =============================================================================
   // STREAMING METHODS
