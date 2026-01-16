@@ -1,0 +1,25 @@
+ignoredBuiltDependencies:
+  - '@carbon/ai-chat'
+  - '@carbon/ai-chat-components'
+  - '@carbon/colors'
+  - '@carbon/feature-flags'
+  - '@carbon/grid'
+  - '@carbon/icon-helpers'
+  - '@carbon/icons'
+  - '@carbon/layout'
+  - '@carbon/motion'
+  - '@carbon/styles'
+  - '@carbon/themes'
+  - '@carbon/type'
+  - '@carbon/web-components'
+  - '@ibm/plex-mono'
+  - '@ibm/plex-sans'
+  - '@ibm/plex-sans-arabic'
+  - '@ibm/plex-sans-devanagari'
+  - '@ibm/plex-sans-hebrew'
+  - '@ibm/plex-sans-thai'
+  - '@ibm/plex-sans-thai-looped'
+  - '@ibm/plex-serif'
+  - protobufjs
+  - sharp
+  - unrs-resolver

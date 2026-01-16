@@ -1,35 +1,17 @@
 /**
- * Renderers module - Custom renderers for Carbon AI Chat
- *
- * This module provides reusable renderer components for displaying
- * various content types in the chat interface.
+ * UI Extension Renderers
  */
 
-// Components
+export { CitationRenderer } from './CitationRenderer'
 export { ErrorRenderer } from './ErrorRenderer'
 export { FormRenderer } from './FormRenderer'
-
-// Types
 export type {
-  // Base types
-  BaseRendererProps,
-  // Error renderer
+  CitationRendererProps,
+  TrajectoryRendererProps,
   ErrorRendererProps,
-  ErrorData,
-  // Form renderer
   FormRendererProps,
-  FormData,
-  FormField,
-  FormFieldType,
-  FormFieldOption,
-  FormFieldValidation,
-  // User-defined content types
-  UserDefinedContent,
-  ImageContent,
-  ChartContent,
-  FileAttachmentContent,
-  DataTableContent,
-  StructuredDataContent,
-  ErrorContent,
-  FormContent
+  ProcessedCitation,
+  TextSegment,
 } from './types'
+
+export { processCitations, segmentTextWithCitations, getUniqueCitations } from './citation-utils'

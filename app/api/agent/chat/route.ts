@@ -115,7 +115,7 @@ export async function POST(request: Request) {
     console.log('Starting stream forwarding...')
     console.log('A2A Response Content-Type:', agentResponse.headers.get('content-type'))
 
-    // Forward the stream in the background
+    // Forward the stream in the background with proper cleanup
     ;(async () => {
       try {
         let chunkCount = 0
@@ -129,11 +129,35 @@ export async function POST(request: Request) {
           chunkCount++
           const text = decoder.decode(value, { stream: true })
           console.log(`Chunk ${chunkCount} received (${value.length} bytes):`, text.substring(0, 200))
-          await writer.write(value)
+
+          try {
+            await writer.write(value)
+          } catch (writeError) {
+            // Client disconnected - stop reading from upstream
+            console.log('Client disconnected, stopping stream forwarding')
+            break
+          }
         }
       } catch (error) {
         console.error('Stream forwarding error:', error)
-        await writer.abort(error)
+      } finally {
+        // Always try to clean up both ends
+        try {
+          await reader.cancel()
+          console.log('Upstream reader cancelled')
+        } catch (e) {
+          // Reader may already be closed
+        }
+        try {
+          await writer.close()
+        } catch (e) {
+          // Writer may already be closed/aborted
+          try {
+            await writer.abort(e)
+          } catch (abortError) {
+            // Ignore - writer is already done
+          }
+        }
       }
     })()
 
@@ -142,7 +166,8 @@ export async function POST(request: Request) {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'X-Request-Id': payload.id as string
       }
     })
   } catch (error) {

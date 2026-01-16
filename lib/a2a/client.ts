@@ -1,3 +1,11 @@
+import {
+  extractDemandsFromAgentCard,
+  buildFulfillments,
+  resolveMetadata,
+  type PlatformConfig,
+} from './extension-handler'
+import type { ExtractedDemands, Fulfillments } from './extension-types'
+
 /**
  * Generate a UUID v4 string with cross-browser compatibility
  * Falls back to crypto.getRandomValues() if crypto.randomUUID() is unavailable
@@ -42,6 +50,7 @@ export interface A2AExtensionConfig {
 export interface A2AClientConfig {
   apiKey?: string
   extensions?: A2AExtensionConfig
+  platformConfig?: PlatformConfig  // Platform configuration for fulfillments
 }
 
 export interface A2AError {
@@ -75,14 +84,15 @@ export interface StreamChunk {
   taskId?: string
   kind: 'status-update' | 'artifact-update'
   status?: {
-    state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled'
-    message?: A2AMessage
+    state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled' | 'input-required' | 'auth-required'
+    message?: A2AMessage & { metadata?: Record<string, unknown> }  // Add metadata support
   }
   artifact?: {
     artifactId: string
     name?: string
     description?: string
     parts: A2AMessagePart[]
+    metadata?: Record<string, unknown>  // Add metadata support
   }
   final?: boolean
 }
@@ -93,6 +103,9 @@ export class A2AClient {
   private apiKey: string
   private extensions: A2AExtensionConfig
   private agentCard: AgentCard | null = null
+  private platformConfig: PlatformConfig | null = null
+  private extractedDemands: ExtractedDemands | null = null
+  private fulfillments: Partial<Fulfillments> | null = null
 
   constructor(agentUrl: string, config: A2AClientConfig = {}) {
     // Normalize URL
@@ -101,6 +114,7 @@ export class A2AClient {
     this.jsonRpcUrl = `${this.baseUrl}/jsonrpc/`
     this.apiKey = config.apiKey || ''
     this.extensions = config.extensions || {}
+    this.platformConfig = config.platformConfig || null
   }
 
   /**
@@ -149,6 +163,14 @@ export class A2AClient {
       throw new Error('Invalid agent card: missing required fields')
     }
 
+    // Extract extension demands from agent card
+    this.extractedDemands = extractDemandsFromAgentCard(this.agentCard)
+
+    // Build fulfillments if platform config is provided
+    if (this.platformConfig) {
+      this.fulfillments = buildFulfillments(this.platformConfig)
+    }
+
     return this.agentCard
   }
 
@@ -161,9 +183,51 @@ export class A2AClient {
   }
 
   /**
+   * Get resolved metadata for A2A requests
+   * Call this after initialize() to get metadata that fulfills agent demands
+   */
+  async getResolvedMetadata(): Promise<Record<string, unknown>> {
+    if (!this.extractedDemands) {
+      return {}
+    }
+
+    if (!this.fulfillments) {
+      console.warn('No fulfillments configured. Agent may fall back to defaults.')
+      return {}
+    }
+
+    return resolveMetadata(this.extractedDemands, this.fulfillments)
+  }
+
+  /**
+   * Get extracted demands from agent card
+   */
+  getExtractedDemands(): ExtractedDemands | null {
+    return this.extractedDemands
+  }
+
+  /**
+   * Update platform configuration after initialization
+   */
+  setPlatformConfig(config: PlatformConfig): void {
+    this.platformConfig = config
+    this.fulfillments = buildFulfillments(config)
+  }
+
+  /**
+   * Get current platform configuration
+   */
+  getPlatformConfig(): PlatformConfig | null {
+    return this.platformConfig
+  }
+
+  /**
    * Build the base params object for A2A requests
    */
-  private buildRequestParams(message: string): Record<string, unknown> {
+  private async buildRequestParams(message: string): Promise<Record<string, unknown>> {
+    // Get resolved metadata from extension demands and fulfillments
+    const resolvedMetadata = await this.getResolvedMetadata()
+
     const params: Record<string, unknown> = {
       message: {
         role: 'user',
@@ -178,14 +242,25 @@ export class A2AClient {
       params.extensions = this.extensions
     }
 
+    // Merge extension config with resolved metadata
+    const hasResolvedMetadata = Object.keys(resolvedMetadata).length > 0
+    if (hasResolvedMetadata) {
+      params.metadata = {
+        ...resolvedMetadata,
+        ...(params.extensions || {})
+      }
+    }
+
     return params
   }
 
   async sendMessage(message: string): Promise<any> {
+    const params = await this.buildRequestParams(message)
+
     const payload = {
       jsonrpc: '2.0',
       method: 'message/send',
-      params: this.buildRequestParams(message),
+      params,
       id: generateUUID()
     }
 
@@ -222,10 +297,12 @@ export class A2AClient {
     onChunk: (chunk: StreamChunk) => void | Promise<void>,
     onComplete?: () => void | Promise<void>
   ): Promise<void> {
+    const params = await this.buildRequestParams(message)
+
     const payload = {
       jsonrpc: '2.0',
       method: 'message/stream',
-      params: this.buildRequestParams(message),
+      params,
       id: generateUUID()
     }
 
