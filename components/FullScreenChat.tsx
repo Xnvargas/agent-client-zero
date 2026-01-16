@@ -188,6 +188,10 @@ export default function FullScreenChat({
 
   // Ref for tracking citations during streaming (to access from useCallback)
   const streamCitationsRef = useRef<Citation[]>([])
+  // Refs for tracking chain of thought and reasoning steps during streaming
+  // These are needed for handleCancelRequest which is a separate callback
+  const chainOfThoughtRef = useRef<ChainOfThoughtStep[]>([])
+  const reasoningStepsRef = useRef<ReasoningStep[]>([])
   const streamingStateRef = useRef<{
     responseId: string | null
     accumulatedText: string
@@ -431,8 +435,17 @@ export default function FullScreenChat({
 
   /**
    * Send the final response chunk (REQUIRED to clear typing indicator)
+   * Now includes citations inline and preserves chain of thought
    */
-  const sendFinalResponse = useCallback(async (fullText: string, responseId: string): Promise<boolean> => {
+  const sendFinalResponse = useCallback(async (
+    fullText: string,
+    responseId: string,
+    options?: {
+      citations?: Citation[]
+      chainOfThought?: ChainOfThoughtStep[]
+      reasoningSteps?: ReasoningStep[]
+    }
+  ): Promise<boolean> => {
     const instance = chatInstanceRef.current
     if (!instance?.messaging?.addMessageChunk) {
       console.warn('[Streaming] Cannot send final_response - addMessageChunk not available')
@@ -446,22 +459,60 @@ export default function FullScreenChat({
     }
 
     try {
+      // Build the generic items array
+      const genericItems: Array<{
+        response_type: string
+        text?: string
+        user_defined?: Record<string, unknown>
+        streaming_metadata?: { id: string }
+      }> = []
+
+      // Add main text response
+      genericItems.push({
+        response_type: MessageResponseTypes.TEXT,
+        text: fullText,
+        streaming_metadata: { id: '1' }
+      })
+
+      // Add citations inline (not as separate message!)
+      if (options?.citations && options.citations.length > 0) {
+        genericItems.push({
+          response_type: MessageResponseTypes.USER_DEFINED,
+          user_defined: {
+            type: 'sources_list',
+            citations: options.citations
+          },
+          streaming_metadata: { id: 'citations' }
+        })
+      }
+
       const finalResponse = {
         final_response: {
           id: responseId,
           output: {
-            generic: [{
-              response_type: MessageResponseTypes.TEXT,
-              text: fullText
-            }]
+            generic: genericItems
           },
           message_options: {
-            response_user_profile: agentProfile
+            response_user_profile: agentProfile,
+            // CRITICAL: Preserve chain of thought so accordion stays visible
+            chain_of_thought: options?.chainOfThought && options.chainOfThought.length > 0
+              ? options.chainOfThought
+              : undefined,
+            // CRITICAL: Preserve reasoning steps
+            reasoning: options?.reasoningSteps && options.reasoningSteps.length > 0
+              ? { steps: options.reasoningSteps }
+              : undefined
           }
         }
       }
 
-      console.log('[Streaming] ✅ Sending final_response:', { textLength: fullText.length, responseId })
+      console.log('[Streaming] ✅ Sending final_response:', {
+        textLength: fullText.length,
+        responseId,
+        citationCount: options?.citations?.length || 0,
+        chainOfThoughtCount: options?.chainOfThought?.length || 0,
+        reasoningStepsCount: options?.reasoningSteps?.length || 0
+      })
       await instance.messaging.addMessageChunk(finalResponse)
       streamingStateRef.current.finalResponseSent = true
       console.log('[Streaming] ✅ final_response sent successfully')
@@ -666,6 +717,7 @@ export default function FullScreenChat({
 
   /**
    * Cancel the current streaming request - sends A2A cancel and clears UI
+   * Preserves chain of thought and reasoning steps accumulated so far
    */
   const handleCancelRequest = useCallback(async () => {
     console.log('[Cancel] Canceling current request')
@@ -695,28 +747,55 @@ export default function FullScreenChat({
       currentTaskIdRef.current = null
     }
 
-    // 3. Force clear typing indicator
+    // 3. Force clear typing indicator while preserving chain of thought
     const state = streamingStateRef.current
     const instance = chatInstanceRef.current
     if (state.responseId && !state.finalResponseSent) {
       if (instance?.messaging?.addMessageChunk && state.supportsChunking) {
         try {
+          // Build generic items including citations if available
+          const genericItems: any[] = [{
+            response_type: MessageResponseTypes.TEXT,
+            text: state.accumulatedText || '(Request cancelled)',
+            streaming_metadata: { id: '1' }
+          }]
+
+          // Include citations if we have any
+          if (streamCitationsRef.current.length > 0) {
+            genericItems.push({
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: 'sources_list',
+                citations: streamCitationsRef.current
+              },
+              streaming_metadata: { id: 'citations' }
+            })
+          }
+
           const finalResponse = {
             final_response: {
               id: state.responseId,
               output: {
-                generic: [{
-                  response_type: MessageResponseTypes.TEXT,
-                  text: state.accumulatedText || '(Request cancelled)'
-                }]
+                generic: genericItems
               },
               message_options: {
-                response_user_profile: agentProfile
+                response_user_profile: agentProfile,
+                // Preserve chain of thought and reasoning from refs
+                chain_of_thought: chainOfThoughtRef.current.length > 0
+                  ? chainOfThoughtRef.current
+                  : undefined,
+                reasoning: reasoningStepsRef.current.length > 0
+                  ? { steps: reasoningStepsRef.current }
+                  : undefined
               }
             }
           }
           await instance.messaging.addMessageChunk(finalResponse)
-          console.log('[Cancel] Sent final_response to clear typing indicator')
+          console.log('[Cancel] Sent final_response to clear typing indicator with preserved state:', {
+            chainOfThought: chainOfThoughtRef.current.length,
+            reasoningSteps: reasoningStepsRef.current.length,
+            citations: streamCitationsRef.current.length
+          })
         } catch (e) {
           console.error('[Cancel] Failed to clear typing indicator:', e)
         }
@@ -731,6 +810,10 @@ export default function FullScreenChat({
       supportsChunking: streamingStateRef.current.supportsChunking,
       finalResponseSent: true
     }
+    // Reset refs
+    chainOfThoughtRef.current = []
+    reasoningStepsRef.current = []
+    streamCitationsRef.current = []
     setIsStreaming(false)
   }, [agentUrl, apiKey, agentProfile])
 
@@ -776,10 +859,20 @@ export default function FullScreenChat({
     setPendingTaskId(null)
     streamCitationsRef.current = []
 
-    console.log('[Handler] Starting message handling:', { 
-      supportsChunking, 
+    // Local tracking arrays for chain of thought and reasoning steps
+    // These are maintained alongside React state so we can pass them to sendFinalResponse
+    // (React state updates are async and won't be available in the closure)
+    const chainOfThought: ChainOfThoughtStep[] = []
+    const reasoningSteps: ReasoningStep[] = []
+
+    // Also reset refs for cancel handler access
+    chainOfThoughtRef.current = []
+    reasoningStepsRef.current = []
+
+    console.log('[Handler] Starting message handling:', {
+      supportsChunking,
       responseId,
-      messagePreview: message.substring(0, 50) 
+      messagePreview: message.substring(0, 50)
     })
 
     try {
@@ -927,6 +1020,11 @@ export default function FullScreenChat({
                         open_state: 'default'
                       }
 
+                      // Update local array for passing to sendFinalResponse
+                      reasoningSteps.push(newStep)
+                      // Update ref for cancel handler access
+                      reasoningStepsRef.current = [...reasoningSteps]
+
                       setReasoningSteps(prev => {
                         const updatedSteps = [...prev, newStep]
                         if (supportsChunking) {
@@ -945,6 +1043,11 @@ export default function FullScreenChat({
                         content: part.text,
                         open_state: 'default'
                       }
+
+                      // Update local array for passing to sendFinalResponse
+                      reasoningSteps.push(newStep)
+                      // Update ref for cancel handler access
+                      reasoningStepsRef.current = [...reasoningSteps]
 
                       // Update state and push to Carbon
                       setReasoningSteps(prev => {
@@ -970,6 +1073,11 @@ export default function FullScreenChat({
                         status: ChainOfThoughtStepStatus.IN_PROGRESS
                       }
 
+                      // Update local array for passing to sendFinalResponse
+                      chainOfThought.push(cotStep)
+                      // Update ref for cancel handler access
+                      chainOfThoughtRef.current = [...chainOfThought]
+
                       // Update state and push to Carbon
                       setChainOfThought(prev => {
                         const updatedSteps = [...prev, cotStep]
@@ -986,6 +1094,21 @@ export default function FullScreenChat({
                     // Handle tool result → Update chain_of_thought step to SUCCESS
                     else if (part.kind === 'data' && part.data?.type === 'tool_result') {
                       const resultData = part.data as { tool_name?: string; result_preview?: any; type: string }
+
+                      // Update local array for passing to sendFinalResponse
+                      for (let i = 0; i < chainOfThought.length; i++) {
+                        if (chainOfThought[i].tool_name === resultData.tool_name &&
+                            chainOfThought[i].status === ChainOfThoughtStepStatus.IN_PROGRESS) {
+                          chainOfThought[i] = {
+                            ...chainOfThought[i],
+                            response: { content: resultData.result_preview },
+                            status: ChainOfThoughtStepStatus.SUCCESS
+                          }
+                          break
+                        }
+                      }
+                      // Update ref for cancel handler access
+                      chainOfThoughtRef.current = [...chainOfThought]
 
                       // Update the matching CoT step with result
                       setChainOfThought(prev => {
@@ -1064,29 +1187,37 @@ export default function FullScreenChat({
 
                 if (isComplete) {
                   receivedFinalTrue = true
-                  console.log('[Handler] ✅ Stream marked as complete:', { 
-                    final: result.final, 
-                    state: result.status?.state 
+                  console.log('[Handler] ✅ Stream marked as complete:', {
+                    final: result.final,
+                    state: result.status?.state
                   })
-                  
+
                   const finalText = streamingStateRef.current.accumulatedText
-                  
+
                   if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
-                    // STREAMING MODE: Send final_response to clear typing indicator
-                    await sendFinalResponse(finalText, responseId)
+                    // STREAMING MODE: Send final_response with citations inline and preserved chain of thought
+                    await sendFinalResponse(finalText, responseId, {
+                      citations: streamCitationsRef.current,
+                      chainOfThought: chainOfThought,
+                      reasoningSteps: reasoningSteps
+                    })
                   } else if (finalText && !streamingStateRef.current.finalResponseSent) {
                     // FALLBACK MODE: Send accumulated text as single message
                     await sendCompleteMessage(finalText)
                     streamingStateRef.current.finalResponseSent = true
+
+                    // In fallback mode, still need to send citations separately
+                    if (streamCitationsRef.current.length > 0) {
+                      await sendCitationsMessage(streamCitationsRef.current)
+                    }
                   }
 
-                  // Send citations as a follow-up message if we have any
-                  if (streamCitationsRef.current.length > 0) {
-                    console.log('[Handler] Sending citations:', { count: streamCitationsRef.current.length })
-                    await sendCitationsMessage(streamCitationsRef.current)
-                  }
-
-                  console.log('[Handler] Final response processed, text length:', finalText.length)
+                  console.log('[Handler] Final response processed:', {
+                    textLength: finalText.length,
+                    citations: streamCitationsRef.current.length,
+                    chainOfThought: chainOfThought.length,
+                    reasoningSteps: reasoningSteps.length
+                  })
                 }
               }
             } catch (parseError) {
@@ -1125,12 +1256,16 @@ export default function FullScreenChat({
 
       if (!state.finalResponseSent) {
         console.log('[Handler] ⚠️ Final response NOT sent yet - triggering fallback')
-        
+
         if (state.accumulatedText) {
           if (supportsChunking && state.hasStartedStreaming) {
             // Streaming mode: must send final_response to clear typing indicator
             console.log('[Handler] Sending fallback final_response for streaming mode')
-            await sendFinalResponse(state.accumulatedText, responseId)
+            await sendFinalResponse(state.accumulatedText, responseId, {
+              citations: streamCitationsRef.current,
+              chainOfThought: chainOfThought,
+              reasoningSteps: reasoningSteps
+            })
           } else {
             // Non-streaming fallback
             console.log('[Handler] Sending fallback complete message')
@@ -1140,7 +1275,10 @@ export default function FullScreenChat({
           // No text accumulated - still need to clear typing indicator
           console.log('[Handler] No text accumulated, sending empty final response')
           if (supportsChunking) {
-            await sendFinalResponse('', responseId)
+            await sendFinalResponse('', responseId, {
+              chainOfThought: chainOfThought,
+              reasoningSteps: reasoningSteps
+            })
           }
         }
       }
@@ -1175,17 +1313,36 @@ export default function FullScreenChat({
         const instance = chatInstanceRef.current
         if (instance?.messaging?.addMessageChunk && finalState.supportsChunking) {
           try {
+            // Build generic items including citations
+            const genericItems: any[] = [{
+              response_type: MessageResponseTypes.TEXT,
+              text: finalState.accumulatedText || '',
+              streaming_metadata: { id: '1' }
+            }]
+
+            // Include citations if we have any
+            if (streamCitationsRef.current.length > 0) {
+              genericItems.push({
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: {
+                  type: 'sources_list',
+                  citations: streamCitationsRef.current
+                },
+                streaming_metadata: { id: 'citations' }
+              })
+            }
+
             const finalResponse = {
               final_response: {
                 id: finalState.responseId,
                 output: {
-                  generic: [{
-                    response_type: MessageResponseTypes.TEXT,
-                    text: finalState.accumulatedText || ''
-                  }]
+                  generic: genericItems
                 },
                 message_options: {
-                  response_user_profile: agentProfile
+                  response_user_profile: agentProfile,
+                  // Preserve chain of thought and reasoning
+                  chain_of_thought: chainOfThought.length > 0 ? chainOfThought : undefined,
+                  reasoning: reasoningSteps.length > 0 ? { steps: reasoningSteps } : undefined
                 }
               }
             }
