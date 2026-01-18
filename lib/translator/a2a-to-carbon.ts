@@ -580,13 +580,23 @@ export class A2AToCarbonTranslator {
     text: string,
     metadata?: Record<string, unknown>
   ): PartialItemChunk {
+    // Extract step number and title from metadata
+    const stepNumber = metadata?.step as number | undefined
+    const stepTitle = metadata?.title as string | undefined
+
     const newStep: ReasoningStep = {
-      title: (metadata?.title as string) || 'Reasoning',
+      title: stepTitle || `Thinking Step ${(stepNumber ?? this.state.reasoningSteps.length) + 1}`,
       content: text,
       open_state: ReasoningStepOpenState.DEFAULT,
     }
 
     this.state.reasoningSteps.push(newStep)
+
+    console.log('[Translator] Added reasoning step:', {
+      step: stepNumber,
+      title: newStep.title,
+      textLength: text.length
+    })
 
     return {
       partial_item: {
@@ -821,7 +831,10 @@ export class A2AToCarbonTranslator {
         message_options: {
           response_user_profile: this.agentProfile,
           reasoning: this.state.reasoningSteps.length > 0
-            ? { steps: this.state.reasoningSteps }
+            ? {
+                steps: this.state.reasoningSteps,
+                open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
+              }
             : undefined,
           chain_of_thought: this.state.chainOfThought.length > 0
             ? this.state.chainOfThought
@@ -858,7 +871,10 @@ export class A2AToCarbonTranslator {
         message_options: {
           response_user_profile: this.agentProfile,
           reasoning: this.state.reasoningSteps.length > 0
-            ? { steps: this.state.reasoningSteps }
+            ? {
+                steps: this.state.reasoningSteps,
+                open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
+              }
             : undefined,
           chain_of_thought: this.state.chainOfThought.length > 0
             ? this.state.chainOfThought

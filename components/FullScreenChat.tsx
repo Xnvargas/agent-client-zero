@@ -551,9 +551,12 @@ export default function FullScreenChat({
             chain_of_thought: options?.chainOfThought && options.chainOfThought.length > 0
               ? options.chainOfThought
               : undefined,
-            // CRITICAL: Preserve reasoning steps
+            // CRITICAL: Preserve reasoning steps with collapsed state after completion
             reasoning: options?.reasoningSteps && options.reasoningSteps.length > 0
-              ? { steps: options.reasoningSteps }
+              ? {
+                  steps: options.reasoningSteps,
+                  open_state: 'close'  // Collapse reasoning accordion after completion
+                }
               : undefined
           }
         }
@@ -715,7 +718,11 @@ export default function FullScreenChat({
         }
       }
 
-      console.log('[Reasoning] Pushing reasoning steps:', { count: steps.length, responseId })
+      console.log('[Reasoning] Pushing to Carbon:', {
+        stepCount: steps.length,
+        latestTitle: steps[steps.length - 1]?.title,
+        responseId
+      })
       await instance.messaging.addMessageChunk(chunk)
       return true
     } catch (err) {
@@ -864,7 +871,10 @@ export default function FullScreenChat({
                   ? chainOfThoughtRef.current
                   : undefined,
                 reasoning: reasoningStepsRef.current.length > 0
-                  ? { steps: reasoningStepsRef.current }
+                  ? {
+                      steps: reasoningStepsRef.current,
+                      open_state: 'close'  // Collapse after cancellation
+                    }
                   : undefined
               }
             }
@@ -1092,10 +1102,21 @@ export default function FullScreenChat({
                   for (const part of agentMessage.parts) {
                     const contentType = part.metadata?.content_type
 
+                    // Log part processing for debugging
+                    console.log('[Handler] Processing part:', {
+                      kind: part.kind,
+                      contentType,
+                      hasText: !!part.text,
+                      hasData: !!part.data,
+                      dataType: part.data?.type
+                    })
+
                     // Parse UI extensions from part-level metadata (trajectory often comes here)
                     const partExtensions = parseUIExtensions(part.metadata as Record<string, unknown>)
 
-                    // Handle trajectory extension for reasoning/thinking
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // TRAJECTORY (legacy) → Route to reasoning accordion
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     if (partExtensions.trajectory) {
                       const trajectory = partExtensions.trajectory
                       const newStep: ReasoningStep = {
@@ -1120,10 +1141,16 @@ export default function FullScreenChat({
                       console.log('[Handler] Added trajectory step:', { title: trajectory.title, groupId: trajectory.group_id })
                     }
 
-                    // Handle thinking/reasoning content → Carbon reasoning.steps (fallback for legacy agents)
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // THINKING CONTENT → Route to reasoning accordion
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (contentType === 'thinking' && part.kind === 'text' && part.text) {
+                      // Extract step number and title from metadata
+                      const stepNumber = part.metadata?.step as number | undefined
+                      const stepTitle = part.metadata?.title as string | undefined
+
                       const newStep: ReasoningStep = {
-                        title: 'Reasoning',
+                        title: stepTitle || `Thinking Step ${(stepNumber ?? reasoningSteps.length) + 1}`,
                         content: part.text,
                         open_state: 'default'
                       }
@@ -1143,10 +1170,19 @@ export default function FullScreenChat({
                         return updatedSteps
                       })
 
-                      console.log('[Handler] Added reasoning step:', { textLength: part.text.length })
+                      console.log('[Handler] Added reasoning step:', {
+                        step: stepNumber,
+                        title: newStep.title,
+                        textLength: part.text.length
+                      })
+
+                      // CRITICAL: Do NOT add to accumulatedText - thinking goes to accordion only
+                      continue
                     }
 
-                    // Handle tool call start → Carbon chain_of_thought (IN_PROGRESS)
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // TOOL CALL → Route to chain_of_thought (existing logic)
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'data' && part.data?.type === 'tool_call') {
                       const toolData = part.data as { tool_name?: string; args?: any; type: string }
                       const cotStep: ChainOfThoughtStep = {
@@ -1175,7 +1211,9 @@ export default function FullScreenChat({
                       console.log('[Handler] Added tool call:', { toolName: toolData.tool_name })
                     }
 
-                    // Handle tool result → Update chain_of_thought step to SUCCESS
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // TOOL RESULT → Update chain_of_thought status (existing logic)
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'data' && part.data?.type === 'tool_result') {
                       const resultData = part.data as { tool_name?: string; result_preview?: any; type: string }
 
@@ -1215,7 +1253,9 @@ export default function FullScreenChat({
                       console.log('[Handler] Updated tool result:', { toolName: resultData.tool_name })
                     }
 
-                    // Handle final response text (content_type === 'response' or regular text)
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // RESPONSE CONTENT → Route to main text stream
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'text' && part.text) {
                       const newText = part.text
 
@@ -1227,9 +1267,11 @@ export default function FullScreenChat({
                         // Send partial chunk with the new text
                         await sendPartialChunk(newText, responseId, itemId)
 
+                        console.log('[Handler] Added response text:', { textLength: newText.length })
                       } else {
                         // FALLBACK MODE: Accumulate text, send at end
                         streamingStateRef.current.accumulatedText += newText
+                        console.log('[Handler] Accumulated response text:', { textLength: newText.length })
                       }
                     }
 
@@ -1472,7 +1514,12 @@ export default function FullScreenChat({
                 message_options: {
                   response_user_profile: agentProfile,
                   chain_of_thought: chainOfThought.length > 0 ? chainOfThought : undefined,
-                  reasoning: reasoningSteps.length > 0 ? { steps: reasoningSteps } : undefined
+                  reasoning: reasoningSteps.length > 0
+                    ? {
+                        steps: reasoningSteps,
+                        open_state: 'close'  // Collapse after completion
+                      }
+                    : undefined
                 }
               }
             })
