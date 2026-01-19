@@ -215,6 +215,18 @@ export default function FullScreenChat({
   // A2A to Carbon translator instance
   const translatorRef = useRef<A2AToCarbonTranslator | null>(null)
 
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // Non-blocking text chunk queue
+  // Reference: scenarios.ts uses setTimeout for non-blocking sends
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const textChunkQueueRef = useRef<string[]>([])
+  const flushTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const CHUNK_FLUSH_INTERVAL = 50  // ms - balances responsiveness vs load
+
+  // Debounce tracking for reasoning pushes
+  const lastReasoningPushRef = useRef<number>(0)
+  const REASONING_PUSH_MIN_INTERVAL = 200  // ms - max 5 pushes per second
+
   // =============================================================================
   // CUSTOM STRINGS FOR AI EXPLAINED POPUP
   // =============================================================================
@@ -399,6 +411,63 @@ export default function FullScreenChat({
       return false
     }
   }, [agentProfile])
+
+  /**
+   * Queue a text chunk for non-blocking send to Carbon.
+   * Chunks are batched and flushed every CHUNK_FLUSH_INTERVAL ms.
+   *
+   * This prevents blocking the SSE parse loop while still providing
+   * smooth streaming to the UI.
+   *
+   * Reference: scenarios.ts uses setTimeout scheduling
+   */
+  const queueTextChunk = useCallback((
+    text: string,
+    responseId: string,
+    itemId: string
+  ) => {
+    textChunkQueueRef.current.push(text)
+
+    // Schedule flush if not already scheduled
+    if (!flushTimeoutRef.current) {
+      flushTimeoutRef.current = setTimeout(async () => {
+        const batch = textChunkQueueRef.current.join('')
+        textChunkQueueRef.current = []
+        flushTimeoutRef.current = null
+
+        if (batch) {
+          try {
+            await sendPartialChunk(batch, responseId, itemId)
+          } catch (err) {
+            console.error('[Queue] Flush error:', err)
+          }
+        }
+      }, CHUNK_FLUSH_INTERVAL)
+    }
+  }, [sendPartialChunk])
+
+  /**
+   * Flush any pending chunks immediately.
+   * Call this before finalization to ensure all text is sent.
+   */
+  const flushTextQueue = useCallback(async (
+    responseId: string,
+    itemId: string
+  ) => {
+    // Clear scheduled flush
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current)
+      flushTimeoutRef.current = null
+    }
+
+    // Send remaining chunks
+    const remaining = textChunkQueueRef.current.join('')
+    textChunkQueueRef.current = []
+
+    if (remaining) {
+      await sendPartialChunk(remaining, responseId, itemId)
+    }
+  }, [sendPartialChunk])
 
   /**
    * Send complete_item to finalize a streaming text item
@@ -776,6 +845,151 @@ export default function FullScreenChat({
   }, [agentProfile])
 
   /**
+   * Push reasoning steps with debouncing.
+   * Prevents overwhelming Carbon with rapid updates (max 5/second).
+   */
+  const debouncedPushReasoningSteps = useCallback(async (
+    responseId: string,
+    steps: ReasoningStep[],
+    itemId: string
+  ): Promise<boolean> => {
+    const now = Date.now()
+    const elapsed = now - lastReasoningPushRef.current
+
+    if (elapsed < REASONING_PUSH_MIN_INTERVAL) {
+      // Wait for remaining interval
+      await new Promise(resolve =>
+        setTimeout(resolve, REASONING_PUSH_MIN_INTERVAL - elapsed)
+      )
+    }
+
+    lastReasoningPushRef.current = Date.now()
+    return pushReasoningSteps(responseId, steps, itemId)
+  }, [pushReasoningSteps])
+
+  /**
+   * Execute the 3-step finalization pattern required by Carbon AI Chat.
+   *
+   * Reference: CustomServer.md - "Typical streaming flow"
+   * Reference: scenarios.ts - streamText function
+   *
+   * Steps:
+   * 1. complete_item - Finalize the text item with full content
+   * 2. final_response - Close the message and clear UI state
+   */
+  const executeFinalization = useCallback(async (
+    responseId: string,
+    itemId: string,
+    options: {
+      text: string
+      chainOfThought?: ChainOfThoughtStep[]
+      reasoningSteps?: ReasoningStep[]
+      citations?: Citation[]
+      wasCancelled?: boolean
+    }
+  ): Promise<boolean> => {
+    const instance = chatInstanceRef.current
+    if (!instance?.messaging?.addMessageChunk) {
+      console.warn('[Finalization] addMessageChunk not available')
+      return false
+    }
+
+    // Prevent duplicate finalization
+    if (streamingStateRef.current.finalResponseSent) {
+      console.log('[Finalization] Already sent, skipping')
+      return true
+    }
+
+    try {
+      console.log('[Finalization] Starting 3-step finalization...', {
+        textLength: options.text.length,
+        reasoningSteps: options.reasoningSteps?.length || 0,
+        chainOfThought: options.chainOfThought?.length || 0,
+        citations: options.citations?.length || 0
+      })
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // STEP 1: complete_item with full accumulated text
+      // Reference: scenarios.ts line ~127
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const completeItem = {
+        response_type: MessageResponseTypes.TEXT,
+        text: options.text,
+        streaming_metadata: {
+          id: itemId,
+          stream_stopped: options.wasCancelled || false
+        }
+      }
+
+      await instance.messaging.addMessageChunk({
+        complete_item: completeItem,
+        streaming_metadata: { response_id: responseId }
+      })
+      console.log('[Finalization] ✅ Step 1: complete_item sent')
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // STEP 2: Build generic items array for final_response
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const genericItems: any[] = [{
+        response_type: MessageResponseTypes.TEXT,
+        text: options.text,
+        streaming_metadata: { id: itemId }
+      }]
+
+      // Add citations as user_defined item if present
+      if (options.citations && options.citations.length > 0) {
+        genericItems.push({
+          response_type: MessageResponseTypes.USER_DEFINED,
+          user_defined: {
+            type: 'sources_list',
+            citations: options.citations
+          },
+          streaming_metadata: { id: 'citations' }
+        })
+      }
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // STEP 3: final_response with message_options preserved
+      // Reference: scenarios.ts line ~137
+      // "if (finalMessageOptions) { finalResponse.final_response.message_options = finalMessageOptions }"
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const messageOptions: any = {
+        response_user_profile: agentProfile
+      }
+
+      // Preserve reasoning steps in final response
+      if (options.reasoningSteps && options.reasoningSteps.length > 0) {
+        messageOptions.reasoning = {
+          steps: options.reasoningSteps,
+          open_state: 'close'  // Collapse after completion
+        }
+      }
+
+      // Preserve chain of thought in final response
+      if (options.chainOfThought && options.chainOfThought.length > 0) {
+        messageOptions.chain_of_thought = options.chainOfThought
+      }
+
+      await instance.messaging.addMessageChunk({
+        final_response: {
+          id: responseId,
+          output: { generic: genericItems },
+          message_options: messageOptions
+        }
+      })
+      console.log('[Finalization] ✅ Step 2: final_response sent')
+
+      // Mark as complete
+      streamingStateRef.current.finalResponseSent = true
+      return true
+
+    } catch (error) {
+      console.error('[Finalization] Error:', error)
+      return false
+    }
+  }, [agentProfile])
+
+  /**
    * Cancel the current streaming request - sends A2A cancel and clears UI
    * Preserves chain of thought and reasoning steps accumulated so far
    */
@@ -807,88 +1021,16 @@ export default function FullScreenChat({
       currentTaskIdRef.current = null
     }
 
-    // 3. Force clear typing indicator with proper 3-step process
+    // 3. Execute finalization with cancel flag using shared helper
     const state = streamingStateRef.current
-    const instance = chatInstanceRef.current
-    if (state.responseId && !state.finalResponseSent) {
-      if (instance?.messaging?.addMessageChunk && state.supportsChunking) {
-        try {
-          const cancelledText = state.accumulatedText || '(Request cancelled)'
-
-          // Step 1: Citations (if any accumulated)
-          if (streamCitationsRef.current.length > 0) {
-            await instance.messaging.addMessageChunk({
-              partial_item: {
-                response_type: MessageResponseTypes.USER_DEFINED,
-                user_defined: {
-                  type: 'sources_list',
-                  citations: streamCitationsRef.current
-                },
-                streaming_metadata: { id: 'citations' }
-              },
-              streaming_metadata: { response_id: state.responseId }
-            })
-          }
-
-          // Step 2: Complete item with stream_stopped flag
-          await instance.messaging.addMessageChunk({
-            complete_item: {
-              response_type: MessageResponseTypes.TEXT,
-              text: cancelledText,
-              streaming_metadata: {
-                id: '1',
-                stream_stopped: true  // Indicates user cancelled
-              }
-            },
-            streaming_metadata: { response_id: state.responseId }
-          })
-
-          // Step 3: Final response
-          const genericItems: any[] = [{
-            response_type: MessageResponseTypes.TEXT,
-            text: cancelledText,
-            streaming_metadata: { id: '1' }
-          }]
-
-          if (streamCitationsRef.current.length > 0) {
-            genericItems.push({
-              response_type: MessageResponseTypes.USER_DEFINED,
-              user_defined: {
-                type: 'sources_list',
-                citations: streamCitationsRef.current
-              },
-              streaming_metadata: { id: 'citations' }
-            })
-          }
-
-          await instance.messaging.addMessageChunk({
-            final_response: {
-              id: state.responseId,
-              output: { generic: genericItems },
-              message_options: {
-                response_user_profile: agentProfile,
-                chain_of_thought: chainOfThoughtRef.current.length > 0
-                  ? chainOfThoughtRef.current
-                  : undefined,
-                reasoning: reasoningStepsRef.current.length > 0
-                  ? {
-                      steps: reasoningStepsRef.current,
-                      open_state: 'close'  // Collapse after cancellation
-                    }
-                  : undefined
-              }
-            }
-          })
-
-          console.log('[Cancel] Completed 3-step finalization with preserved state:', {
-            chainOfThought: chainOfThoughtRef.current.length,
-            reasoningSteps: reasoningStepsRef.current.length,
-            citations: streamCitationsRef.current.length
-          })
-        } catch (e) {
-          console.error('[Cancel] Failed to complete finalization:', e)
-        }
-      }
+    if (state.responseId && !state.finalResponseSent && state.supportsChunking) {
+      await executeFinalization(state.responseId, '1', {
+        text: state.accumulatedText || '(Request cancelled)',
+        chainOfThought: chainOfThoughtRef.current.length > 0 ? chainOfThoughtRef.current : undefined,
+        reasoningSteps: reasoningStepsRef.current.length > 0 ? reasoningStepsRef.current : undefined,
+        citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined,
+        wasCancelled: true
+      })
     }
 
     // 4. Reset all state (don't manipulate loading counter - let Carbon handle it)
@@ -904,7 +1046,7 @@ export default function FullScreenChat({
     reasoningStepsRef.current = []
     streamCitationsRef.current = []
     setIsStreaming(false)
-  }, [agentUrl, apiKey, agentProfile])
+  }, [agentUrl, apiKey, executeFinalization])
 
   // =============================================================================
   // MAIN MESSAGE HANDLER
@@ -924,6 +1066,16 @@ export default function FullScreenChat({
     }
 
     const supportsChunking = streamingStateRef.current.supportsChunking
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Clear any pending state from previous message
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    textChunkQueueRef.current = []
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current)
+      flushTimeoutRef.current = null
+    }
+    lastReasoningPushRef.current = 0
 
     // Initialize streaming state
     const responseId = generateResponseId()
@@ -1039,13 +1191,33 @@ export default function FullScreenChat({
         const { done, value } = await reader.read()
         
         if (done) {
-          console.log('[Handler] ⚠️ STREAM READER DONE - Connection closed by server')
-          console.log('[Handler] Stream state at close:', {
+          console.log('[Handler] Stream reader done - executing finalization')
+          console.log('[Handler] Final state:', {
             accumulatedTextLength: streamingStateRef.current.accumulatedText.length,
             finalResponseSent: streamingStateRef.current.finalResponseSent,
             hasStartedStreaming: streamingStateRef.current.hasStartedStreaming,
-            receivedFinalTrue
+            receivedFinalTrue,
+            reasoningSteps: reasoningSteps.length,
+            chainOfThought: chainOfThought.length,
+            citations: streamCitationsRef.current.length
           })
+
+          // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          // CRITICAL: Execute finalization on normal stream completion
+          // Reference: CustomServer.md - "Always send a final response chunk"
+          // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          if (!streamingStateRef.current.finalResponseSent && supportsChunking) {
+            // Flush any pending text chunks before finalization
+            await flushTextQueue(responseId, itemId)
+
+            await executeFinalization(responseId, itemId, {
+              text: streamingStateRef.current.accumulatedText,
+              chainOfThought: chainOfThought.length > 0 ? chainOfThought : undefined,
+              reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+              citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined
+            })
+          }
+
           break
         }
 
@@ -1151,6 +1323,8 @@ export default function FullScreenChat({
                     // NOTE: Trajectory is metadata-only - it does NOT consume the part's content
                     // After processing trajectory, we continue to check the part's actual content
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // FIXED: Async calls OUTSIDE setState, following Carbon's pattern
+                    // Reference: scenarios.ts runReasoningStepsScenario
                     if (partExtensions.trajectory) {
                       const trajectory = partExtensions.trajectory
                       const newStep: ReasoningStep = {
@@ -1159,18 +1333,19 @@ export default function FullScreenChat({
                         open_state: 'default'
                       }
 
-                      // Update local array for passing to sendFinalResponse
+                      // Step 1: Synchronous array mutation (like Carbon's collectedSteps.push)
                       reasoningSteps.push(newStep)
-                      // Update ref for cancel handler access
+
+                      // Step 2: Update ref for cancel handler access
                       reasoningStepsRef.current = [...reasoningSteps]
 
-                      setReasoningSteps(prev => {
-                        const updatedSteps = [...prev, newStep]
-                        if (supportsChunking) {
-                          pushReasoningSteps(responseId, updatedSteps, itemId)
-                        }
-                        return updatedSteps
-                      })
+                      // Step 3: Update React state - PURE, no side effects!
+                      setReasoningSteps([...reasoningSteps])
+
+                      // Step 4: Push to Carbon OUTSIDE setState (properly awaited)
+                      if (supportsChunking) {
+                        await debouncedPushReasoningSteps(responseId, reasoningSteps, itemId)
+                      }
 
                       console.log('[Handler] Added trajectory step:', { title: trajectory.title, groupId: trajectory.group_id })
                       // NOTE: Do NOT use 'continue' here - trajectory is metadata only,
@@ -1179,6 +1354,8 @@ export default function FullScreenChat({
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     // THINKING CONTENT → Route to reasoning accordion
+                    // FIXED: Async calls OUTSIDE setState, following Carbon's pattern
+                    // Reference: scenarios.ts runReasoningStepsScenario
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     if (contentType === 'thinking' && part.kind === 'text' && part.text) {
                       // Extract step number and title from metadata
@@ -1191,25 +1368,26 @@ export default function FullScreenChat({
                         open_state: 'default'
                       }
 
-                      // Update local array for passing to sendFinalResponse
+                      // Step 1: Synchronous array mutation (like Carbon's collectedSteps.push)
                       reasoningSteps.push(newStep)
-                      // Update ref for cancel handler access
+
+                      // Step 2: Update ref for cancel handler access
                       reasoningStepsRef.current = [...reasoningSteps]
 
-                      // Update state and push to Carbon
-                      setReasoningSteps(prev => {
-                        const updatedSteps = [...prev, newStep]
-                        // Push reasoning steps to Carbon
-                        if (supportsChunking) {
-                          pushReasoningSteps(responseId, updatedSteps, itemId)
-                        }
-                        return updatedSteps
-                      })
+                      // Step 3: Update React state - PURE, no side effects!
+                      setReasoningSteps([...reasoningSteps])
+
+                      // Step 4: Push to Carbon OUTSIDE setState (properly awaited)
+                      // This matches Carbon's: pushMessageOptions(instance, responseID, {...})
+                      if (supportsChunking) {
+                        await debouncedPushReasoningSteps(responseId, reasoningSteps, itemId)
+                      }
 
                       console.log('[Handler] Added reasoning step:', {
                         step: stepNumber,
                         title: newStep.title,
-                        textLength: part.text.length
+                        textLength: part.text.length,
+                        totalSteps: reasoningSteps.length
                       })
 
                       // CRITICAL: Do NOT add to accumulatedText - thinking goes to accordion only
@@ -1217,7 +1395,8 @@ export default function FullScreenChat({
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // TOOL CALL → Route to chain_of_thought (existing logic)
+                    // TOOL CALL → Route to chain_of_thought
+                    // FIXED: Async calls OUTSIDE setState, following Carbon's pattern
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'data' && part.data?.type === 'tool_call') {
                       const toolData = part.data as { tool_name?: string; args?: any; type: string }
@@ -1229,31 +1408,34 @@ export default function FullScreenChat({
                         status: ChainOfThoughtStepStatus.IN_PROGRESS
                       }
 
-                      // Update local array for passing to sendFinalResponse
+                      // Step 1: Synchronous array mutation
                       chainOfThought.push(cotStep)
-                      // Update ref for cancel handler access
+
+                      // Step 2: Update ref for cancel handler access
                       chainOfThoughtRef.current = [...chainOfThought]
 
-                      // Update state and push to Carbon
-                      setChainOfThought(prev => {
-                        const updatedSteps = [...prev, cotStep]
-                        // Push chain of thought to Carbon
-                        if (supportsChunking) {
-                          pushChainOfThought(responseId, updatedSteps, itemId)
-                        }
-                        return updatedSteps
-                      })
+                      // Step 3: Update React state - PURE, no side effects!
+                      setChainOfThought([...chainOfThought])
 
-                      console.log('[Handler] Added tool call:', { toolName: toolData.tool_name })
+                      // Step 4: Push to Carbon OUTSIDE setState (properly awaited)
+                      if (supportsChunking) {
+                        await pushChainOfThought(responseId, chainOfThought, itemId)
+                      }
+
+                      console.log('[Handler] Added tool call:', {
+                        toolName: toolData.tool_name,
+                        totalSteps: chainOfThought.length
+                      })
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // TOOL RESULT → Update chain_of_thought status (existing logic)
+                    // TOOL RESULT → Update chain_of_thought status
+                    // FIXED: Async calls OUTSIDE setState, following Carbon's pattern
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'data' && part.data?.type === 'tool_result') {
                       const resultData = part.data as { tool_name?: string; result_preview?: any; type: string }
 
-                      // Update local array for passing to sendFinalResponse
+                      // Step 1: Synchronous array mutation - update local array
                       for (let i = 0; i < chainOfThought.length; i++) {
                         if (chainOfThought[i].tool_name === resultData.tool_name &&
                             chainOfThought[i].status === ChainOfThoughtStepStatus.IN_PROGRESS) {
@@ -1265,48 +1447,42 @@ export default function FullScreenChat({
                           break
                         }
                       }
-                      // Update ref for cancel handler access
+
+                      // Step 2: Update ref for cancel handler access
                       chainOfThoughtRef.current = [...chainOfThought]
 
-                      // Update the matching CoT step with result
-                      setChainOfThought(prev => {
-                        const updatedSteps = prev.map(step =>
-                          step.tool_name === resultData.tool_name && step.status === ChainOfThoughtStepStatus.IN_PROGRESS
-                            ? {
-                                ...step,
-                                response: { content: resultData.result_preview },
-                                status: ChainOfThoughtStepStatus.SUCCESS
-                              }
-                            : step
-                        )
-                        // Push updated chain of thought to Carbon
-                        if (supportsChunking) {
-                          pushChainOfThought(responseId, updatedSteps, itemId)
-                        }
-                        return updatedSteps
-                      })
+                      // Step 3: Update React state - PURE, no side effects!
+                      setChainOfThought([...chainOfThought])
+
+                      // Step 4: Push to Carbon OUTSIDE setState (properly awaited)
+                      if (supportsChunking) {
+                        await pushChainOfThought(responseId, chainOfThought, itemId)
+                      }
 
                       console.log('[Handler] Updated tool result:', { toolName: resultData.tool_name })
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     // RESPONSE CONTENT → Route to main text stream
+                    // FIXED: Use non-blocking queue pattern to prevent parse loop blocking
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     else if (part.kind === 'text' && part.text) {
                       const newText = part.text
 
+                      // Always accumulate
+                      streamingStateRef.current.accumulatedText += newText
+                      streamingStateRef.current.hasStartedStreaming = true
+
                       if (supportsChunking) {
-                        // STREAMING MODE: Use addMessageChunk
-                        streamingStateRef.current.accumulatedText += newText
-                        streamingStateRef.current.hasStartedStreaming = true
+                        // Queue for batched send - doesn't block parse loop
+                        queueTextChunk(newText, responseId, itemId)
 
-                        // Send partial chunk with the new text
-                        await sendPartialChunk(newText, responseId, itemId)
-
-                        console.log('[Handler] Added response text:', { textLength: newText.length })
+                        console.log('[Handler] Queued response text:', {
+                          chunkLength: newText.length,
+                          queueSize: textChunkQueueRef.current.length
+                        })
                       } else {
-                        // FALLBACK MODE: Accumulate text, send at end
-                        streamingStateRef.current.accumulatedText += newText
+                        // FALLBACK MODE: Just accumulate, send at end
                         console.log('[Handler] Accumulated response text:', { textLength: newText.length })
                       }
                     }
@@ -1354,32 +1530,21 @@ export default function FullScreenChat({
                     state: result.status?.state
                   })
 
-                  const finalText = streamingStateRef.current.accumulatedText
-
                   if (supportsChunking && streamingStateRef.current.hasStartedStreaming) {
-                    // STREAMING MODE: Proper 3-step finalization
+                    // Flush any pending text chunks before finalization
+                    await flushTextQueue(responseId, itemId)
 
-                    // Step 1: Send citations as partial_item (if not already sent during stream)
-                    if (streamCitationsRef.current.length > 0) {
-                      console.log('[Handler] Step 1: Sending citations partial_item')
-                      await sendCitationsPartialItem(streamCitationsRef.current, responseId)
-                    }
-
-                    // Step 2: Send complete_item to finalize the text
-                    console.log('[Handler] Step 2: Sending complete_item')
-                    await sendCompleteTextItem(finalText, responseId, '1', false)
-
-                    // Step 3: Send final_response to clear typing indicator and persist state
-                    console.log('[Handler] Step 3: Sending final_response')
-                    await sendFinalResponse(finalText, responseId, {
-                      citations: streamCitationsRef.current,
-                      chainOfThought: chainOfThought,
-                      reasoningSteps: reasoningSteps
+                    // Use shared executeFinalization helper
+                    await executeFinalization(responseId, itemId, {
+                      text: streamingStateRef.current.accumulatedText,
+                      chainOfThought: chainOfThought.length > 0 ? chainOfThought : undefined,
+                      reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                      citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined
                     })
 
-                  } else if (finalText && !streamingStateRef.current.finalResponseSent) {
+                  } else if (streamingStateRef.current.accumulatedText && !streamingStateRef.current.finalResponseSent) {
                     // FALLBACK MODE: Send accumulated text as single message
-                    await sendCompleteMessage(finalText)
+                    await sendCompleteMessage(streamingStateRef.current.accumulatedText)
                     streamingStateRef.current.finalResponseSent = true
 
                     // In fallback mode, still need to send citations separately
@@ -1389,7 +1554,7 @@ export default function FullScreenChat({
                   }
 
                   console.log('[Handler] Final response processed:', {
-                    textLength: finalText.length,
+                    textLength: streamingStateRef.current.accumulatedText.length,
                     citations: streamCitationsRef.current.length,
                     chainOfThought: chainOfThought.length,
                     reasoningSteps: reasoningSteps.length
@@ -1585,7 +1750,7 @@ export default function FullScreenChat({
         finalResponseSent: false
       }
     }
-  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteTextItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, sendCitationsMessage, sendCitationsPartialItem, applyStringsToRedux, agentProfile, pushReasoningSteps, pushChainOfThought])
+  }, [agentUrl, apiKey, extensions, sendPartialChunk, sendCompleteTextItem, sendFinalResponse, sendCompleteMessage, sendUserDefinedMessage, sendCitationsMessage, sendCitationsPartialItem, applyStringsToRedux, agentProfile, debouncedPushReasoningSteps, pushChainOfThought, queueTextChunk, flushTextQueue, executeFinalization])
 
   /**
    * Handle form submission for input-required state
