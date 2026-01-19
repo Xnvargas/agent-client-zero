@@ -192,6 +192,8 @@ export default function FullScreenChat({
   // These are needed for handleCancelRequest which is a separate callback
   const chainOfThoughtRef = useRef<ChainOfThoughtStep[]>([])
   const reasoningStepsRef = useRef<ReasoningStep[]>([])
+  // Ref for accumulated thinking content (for reasoning.content mode)
+  const accumulatedThinkingRef = useRef<string>('')
   const streamingStateRef = useRef<{
     responseId: string | null
     accumulatedText: string
@@ -565,7 +567,7 @@ export default function FullScreenChat({
     options?: {
       citations?: Citation[]
       chainOfThought?: ChainOfThoughtStep[]
-      reasoningSteps?: ReasoningStep[]
+      thinkingContent?: string  // Accumulated thinking content for reasoning.content mode
     }
   ): Promise<boolean> => {
     const instance = chatInstanceRef.current
@@ -620,12 +622,9 @@ export default function FullScreenChat({
             chain_of_thought: options?.chainOfThought && options.chainOfThought.length > 0
               ? options.chainOfThought
               : undefined,
-            // CRITICAL: Preserve reasoning steps with collapsed state after completion
-            reasoning: options?.reasoningSteps && options.reasoningSteps.length > 0
-              ? {
-                  steps: options.reasoningSteps,
-                  open_state: 'close'  // Collapse reasoning accordion after completion
-                }
+            // CRITICAL: Preserve thinking content using reasoning.content mode
+            reasoning: options?.thinkingContent
+              ? { content: options.thinkingContent }
               : undefined
           }
         }
@@ -636,7 +635,7 @@ export default function FullScreenChat({
         responseId,
         citationCount: options?.citations?.length || 0,
         chainOfThoughtCount: options?.chainOfThought?.length || 0,
-        reasoningStepsCount: options?.reasoningSteps?.length || 0
+        thinkingContentLength: options?.thinkingContent?.length || 0
       })
       await instance.messaging.addMessageChunk(finalResponse)
       streamingStateRef.current.finalResponseSent = true
@@ -884,7 +883,7 @@ export default function FullScreenChat({
     options: {
       text: string
       chainOfThought?: ChainOfThoughtStep[]
-      reasoningSteps?: ReasoningStep[]
+      thinkingContent?: string  // Accumulated thinking content for reasoning.content mode
       citations?: Citation[]
       wasCancelled?: boolean
     }
@@ -904,7 +903,7 @@ export default function FullScreenChat({
     try {
       console.log('[Finalization] Starting 3-step finalization...', {
         textLength: options.text.length,
-        reasoningSteps: options.reasoningSteps?.length || 0,
+        thinkingContentLength: options.thinkingContent?.length || 0,
         chainOfThought: options.chainOfThought?.length || 0,
         citations: options.citations?.length || 0
       })
@@ -958,11 +957,10 @@ export default function FullScreenChat({
         response_user_profile: agentProfile
       }
 
-      // Preserve reasoning steps in final response
-      if (options.reasoningSteps && options.reasoningSteps.length > 0) {
+      // Preserve thinking content in final response using reasoning.content mode
+      if (options.thinkingContent) {
         messageOptions.reasoning = {
-          steps: options.reasoningSteps,
-          open_state: 'close'  // Collapse after completion
+          content: options.thinkingContent
         }
       }
 
@@ -1028,7 +1026,7 @@ export default function FullScreenChat({
       await executeFinalization(state.responseId, '1', {
         text: state.accumulatedText || '(Request cancelled)',
         chainOfThought: chainOfThoughtRef.current.length > 0 ? chainOfThoughtRef.current : undefined,
-        reasoningSteps: reasoningStepsRef.current.length > 0 ? reasoningStepsRef.current : undefined,
+        thinkingContent: accumulatedThinkingRef.current || undefined,
         citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined,
         wasCancelled: true
       })
@@ -1045,6 +1043,7 @@ export default function FullScreenChat({
     // Reset refs
     chainOfThoughtRef.current = []
     reasoningStepsRef.current = []
+    accumulatedThinkingRef.current = ''
     streamCitationsRef.current = []
     setIsStreaming(false)
   }, [agentUrl, apiKey, executeFinalization])
@@ -1110,6 +1109,7 @@ export default function FullScreenChat({
     // Also reset refs for cancel handler access
     chainOfThoughtRef.current = []
     reasoningStepsRef.current = []
+    accumulatedThinkingRef.current = ''  // Reset thinking accumulator for new message
 
     console.log('[Handler] Starting message handling:', {
       supportsChunking,
@@ -1136,7 +1136,7 @@ export default function FullScreenChat({
             partial_response: {
               message_options: {
                 response_user_profile: agentProfile,
-                reasoning: { steps: [] },      // Initialize empty reasoning accordion
+                reasoning: { content: '' },    // Initialize empty reasoning content for token streaming
                 chain_of_thought: []           // Initialize empty chain of thought
               }
             },
@@ -1214,7 +1214,7 @@ export default function FullScreenChat({
             await executeFinalization(responseId, itemId, {
               text: streamingStateRef.current.accumulatedText,
               chainOfThought: chainOfThought.length > 0 ? chainOfThought : undefined,
-              reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+              thinkingContent: accumulatedThinkingRef.current || undefined,
               citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined
             })
           }
@@ -1354,41 +1354,38 @@ export default function FullScreenChat({
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // THINKING CONTENT → Route to reasoning accordion
-                    // FIXED: Async calls OUTSIDE setState, following Carbon's pattern
-                    // Reference: scenarios.ts runReasoningStepsScenario
+                    // THINKING CONTENT → Route to reasoning accordion using content mode
+                    // Uses reasoning.content for continuous token streaming instead of steps[]
+                    // Reference: Carbon AI Chat streamReasoningContentFirst() pattern
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     if (contentType === 'thinking' && part.kind === 'text' && part.text) {
-                      // Extract step number and title from metadata
-                      const stepNumber = part.metadata?.step as number | undefined
-                      const stepTitle = part.metadata?.title as string | undefined
+                      // Accumulate thinking tokens into a single string
+                      accumulatedThinkingRef.current += part.text
 
-                      const newStep: ReasoningStep = {
-                        title: stepTitle || `Thinking Step ${(stepNumber ?? reasoningSteps.length) + 1}`,
-                        content: part.text,
-                        open_state: 'default'
-                      }
-
-                      // Step 1: Synchronous array mutation (like Carbon's collectedSteps.push)
-                      reasoningSteps.push(newStep)
-
-                      // Step 2: Update ref for cancel handler access
-                      reasoningStepsRef.current = [...reasoningSteps]
-
-                      // Step 3: Update React state - PURE, no side effects!
-                      setReasoningSteps([...reasoningSteps])
-
-                      // Step 4: Push to Carbon OUTSIDE setState (properly awaited)
-                      // This matches Carbon's: pushMessageOptions(instance, responseID, {...})
+                      // Push accumulated content to Carbon for live streaming display
                       if (supportsChunking) {
-                        await debouncedPushReasoningSteps(responseId, reasoningSteps, itemId)
+                        const instance = chatInstanceRef.current
+                        if (instance?.messaging?.addMessageChunk) {
+                          await instance.messaging.addMessageChunk({
+                            partial_item: {
+                              response_type: MessageResponseTypes.TEXT,
+                              text: '',  // Main text stays empty during thinking
+                              streaming_metadata: { id: itemId, cancellable: true }
+                            },
+                            partial_response: {
+                              message_options: {
+                                response_user_profile: agentProfile,
+                                reasoning: { content: accumulatedThinkingRef.current }
+                              }
+                            },
+                            streaming_metadata: { response_id: responseId }
+                          })
+                        }
                       }
 
-                      console.log('[Handler] Added reasoning step:', {
-                        step: stepNumber,
-                        title: newStep.title,
-                        textLength: part.text.length,
-                        totalSteps: reasoningSteps.length
+                      console.log('[Handler] Streamed thinking token:', {
+                        tokenLength: part.text.length,
+                        totalThinking: accumulatedThinkingRef.current.length
                       })
 
                       // CRITICAL: Do NOT add to accumulatedText - thinking goes to accordion only
@@ -1539,7 +1536,7 @@ export default function FullScreenChat({
                     await executeFinalization(responseId, itemId, {
                       text: streamingStateRef.current.accumulatedText,
                       chainOfThought: chainOfThought.length > 0 ? chainOfThought : undefined,
-                      reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                      thinkingContent: accumulatedThinkingRef.current || undefined,
                       citations: streamCitationsRef.current.length > 0 ? streamCitationsRef.current : undefined
                     })
 
@@ -1615,7 +1612,7 @@ export default function FullScreenChat({
             await sendFinalResponse(state.accumulatedText, responseId, {
               citations: streamCitationsRef.current,
               chainOfThought: chainOfThought,
-              reasoningSteps: reasoningSteps
+              thinkingContent: accumulatedThinkingRef.current || undefined
             })
           } else {
             // Non-streaming fallback
@@ -1628,7 +1625,7 @@ export default function FullScreenChat({
           if (supportsChunking) {
             await sendFinalResponse('', responseId, {
               chainOfThought: chainOfThought,
-              reasoningSteps: reasoningSteps
+              thinkingContent: accumulatedThinkingRef.current || undefined
             })
           }
         }
@@ -1716,11 +1713,8 @@ export default function FullScreenChat({
                 message_options: {
                   response_user_profile: agentProfile,
                   chain_of_thought: chainOfThought.length > 0 ? chainOfThought : undefined,
-                  reasoning: reasoningSteps.length > 0
-                    ? {
-                        steps: reasoningSteps,
-                        open_state: 'close'  // Collapse after completion
-                      }
+                  reasoning: accumulatedThinkingRef.current
+                    ? { content: accumulatedThinkingRef.current }
                     : undefined
                 }
               }
