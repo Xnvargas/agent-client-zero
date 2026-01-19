@@ -964,6 +964,38 @@ export default function FullScreenChat({
       messagePreview: message.substring(0, 50)
     })
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // CRITICAL: Create shell message BEFORE streaming begins
+    // This seeds the message container so Carbon's reducers can attach chunks
+    // Without this, streaming chunks have nothing to attach to and the UI
+    // gets stuck in a "responding" state
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (supportsChunking) {
+      const instance = chatInstanceRef.current
+      if (instance?.messaging?.addMessageChunk) {
+        try {
+          await instance.messaging.addMessageChunk({
+            partial_item: {
+              response_type: MessageResponseTypes.TEXT,
+              text: '',
+              streaming_metadata: { id: itemId }
+            },
+            partial_response: {
+              message_options: {
+                response_user_profile: agentProfile,
+                reasoning: { steps: [] },      // Initialize empty reasoning accordion
+                chain_of_thought: []           // Initialize empty chain of thought
+              }
+            },
+            streaming_metadata: { response_id: responseId }
+          })
+          console.log('[Handler] ✅ Shell message created:', { responseId, itemId })
+        } catch (err) {
+          console.error('[Handler] Failed to create shell message:', err)
+        }
+      }
+    }
+
     try {
       // Create abort controller for this request
       abortControllerRef.current = new AbortController()
@@ -1116,6 +1148,8 @@ export default function FullScreenChat({
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     // TRAJECTORY (legacy) → Route to reasoning accordion
+                    // NOTE: Trajectory is metadata-only - it does NOT consume the part's content
+                    // After processing trajectory, we continue to check the part's actual content
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     if (partExtensions.trajectory) {
                       const trajectory = partExtensions.trajectory
@@ -1139,12 +1173,14 @@ export default function FullScreenChat({
                       })
 
                       console.log('[Handler] Added trajectory step:', { title: trajectory.title, groupId: trajectory.group_id })
+                      // NOTE: Do NOT use 'continue' here - trajectory is metadata only,
+                      // the part's actual content (text/data/file) should still be processed below
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     // THINKING CONTENT → Route to reasoning accordion
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    else if (contentType === 'thinking' && part.kind === 'text' && part.text) {
+                    if (contentType === 'thinking' && part.kind === 'text' && part.text) {
                       // Extract step number and title from metadata
                       const stepNumber = part.metadata?.step as number | undefined
                       const stepTitle = part.metadata?.title as string | undefined
