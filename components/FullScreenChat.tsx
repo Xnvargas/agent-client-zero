@@ -1363,15 +1363,24 @@ export default function FullScreenChat({
                       accumulatedThinkingRef.current += part.text
 
                       // Push accumulated content to Carbon for live streaming display
+                      // CRITICAL: Must include partial_item and streaming_metadata.response_id
+                      // so Carbon knows which message to update
                       if (supportsChunking) {
                         const instance = chatInstanceRef.current
                         if (instance?.messaging?.addMessageChunk) {
                           await instance.messaging.addMessageChunk({
+                            partial_item: {
+                              response_type: MessageResponseTypes.TEXT,
+                              text: '',  // Main text stays empty during thinking
+                              streaming_metadata: { id: itemId, cancellable: true }
+                            },
                             partial_response: {
                               message_options: {
+                                response_user_profile: agentProfile,
                                 reasoning: { content: accumulatedThinkingRef.current }
                               }
-                            }
+                            },
+                            streaming_metadata: { response_id: responseId }
                           })
                         }
                       }
@@ -1395,15 +1404,24 @@ export default function FullScreenChat({
                       // For live streaming, also push to reasoning.content
                       accumulatedThinkingRef.current += part.text
 
+                      // CRITICAL: Must include partial_item and streaming_metadata.response_id
+                      // so Carbon knows which message to update
                       if (supportsChunking) {
                         const instance = chatInstanceRef.current
                         if (instance?.messaging?.addMessageChunk) {
                           await instance.messaging.addMessageChunk({
+                            partial_item: {
+                              response_type: MessageResponseTypes.TEXT,
+                              text: '',  // Main text stays empty during reasoning
+                              streaming_metadata: { id: itemId, cancellable: true }
+                            },
                             partial_response: {
                               message_options: {
+                                response_user_profile: agentProfile,
                                 reasoning: { content: accumulatedThinkingRef.current }
                               }
-                            }
+                            },
+                            streaming_metadata: { response_id: responseId }
                           })
                         }
                       }
