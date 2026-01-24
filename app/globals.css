@@ -355,10 +355,14 @@ body {
   transform: translateX(100%) !important;
 }
 
+/* No longer needed - Carbon's cds-aichat--hidden handles hiding
+   while keeping launcher visible */
+/*
 .chat-element--sidebar-closed {
   transform: translateX(100%) !important;
   visibility: hidden;
 }
+*/
 
 /* -----------------------------------------------------------------------------
  * RTL SUPPORT
@@ -370,8 +374,7 @@ body {
   box-shadow: 4px 0 16px rgba(0, 0, 0, 0.15);
 }
 
-[dir="rtl"] .chat-element--sidebar-closing,
-[dir="rtl"] .chat-element--sidebar-closed {
+[dir="rtl"] .chat-element--sidebar-closing {
   transform: translateX(-100%) !important;
 }
 

@@ -418,18 +418,18 @@ export default function ChatPanel({
         return 'chat-element--fullscreen'
 
       case 'sidebar':
-        let sidebarClass = 'chat-element--sidebar'
+        // Only apply closing class for animation
+        // Don't apply 'closed' class - let Carbon's cds-aichat--hidden handle hiding
+        // (cds-aichat--hidden keeps launcher visible, our --closed class hides it)
         if (sidebarClosing) {
-          sidebarClass += ' chat-element--sidebar-closing'
-        } else if (!sidebarOpen) {
-          sidebarClass += ' chat-element--sidebar-closed'
+          return 'chat-element--sidebar chat-element--sidebar-closing'
         }
-        return sidebarClass
+        return 'chat-element--sidebar'
 
       default:
         return 'chat-element--fullscreen'
     }
-  }, [layout, sidebarOpen, sidebarClosing])
+  }, [layout, sidebarClosing])  // Remove sidebarOpen from dependencies
 
   // ==========================================================================
   // APPLY STRINGS TO REDUX STORE
