@@ -364,16 +364,18 @@ body {
   transform: translateX(100%) !important;
 }
 
-/* When minimized - allow Carbon's hidden class to work */
-/* NOTE: Do NOT use overflow:hidden here - it clips the launcher button */
-/* The launcher uses position:fixed but the sidebar's transform property */
-/* creates a new containing block, making fixed children relative to sidebar */
+/* When sidebar is minimized, slide it off screen (don't collapse to 0x0) */
+/* This keeps the launcher renderable while hiding the chat content */
 .chat-element--sidebar.cds-aichat--hidden {
-  width: 0 !important;
-  height: 0 !important;
-  min-width: 0 !important;
-  min-height: 0 !important;
-  /* overflow: hidden removed to keep launcher visible */
+  transform: translateX(100%) !important;
+  /* Do NOT set width/height to 0 - this clips the launcher */
+}
+
+/* Counter-transform the launcher to keep it visible in the viewport */
+/* Since the sidebar's transform creates a containing block, the launcher's */
+/* position:fixed is relative to the sidebar. We need to offset it back. */
+.chat-element--sidebar.cds-aichat--hidden .cds-aichat--launcher__button-container {
+  transform: translateX(calc(-1 * var(--chat-sidebar-width))) !important;
 }
 
 /* No longer needed - Carbon's cds-aichat--hidden handles hiding
@@ -397,6 +399,15 @@ body {
 
 [dir="rtl"] .chat-element--sidebar-closing {
   transform: translateX(-100%) !important;
+}
+
+/* RTL support for hidden sidebar launcher */
+[dir="rtl"] .chat-element--sidebar.cds-aichat--hidden {
+  transform: translateX(-100%) !important;
+}
+
+[dir="rtl"] .chat-element--sidebar.cds-aichat--hidden .cds-aichat--launcher__button-container {
+  transform: translateX(var(--chat-sidebar-width)) !important;
 }
 
 /* -----------------------------------------------------------------------------
