@@ -217,8 +217,22 @@ export default function ChatPanel({
   // SIDEBAR STATE (for animations)
   // ==========================================================================
 
-  const [sidebarOpen, setSidebarOpen] = useState(layout === 'sidebar')
+  const [sidebarOpen, setSidebarOpen] = useState(true) // Start true - sidebar visible by default
   const [sidebarClosing, setSidebarClosing] = useState(false)
+
+  // Ref to access current layout in callbacks (since callbacks can't be updated after mount)
+  const layoutRef = useRef(layout)
+  useEffect(() => {
+    layoutRef.current = layout
+  }, [layout])
+
+  // Sync sidebar state when layout changes TO sidebar
+  useEffect(() => {
+    if (layout === 'sidebar') {
+      setSidebarOpen(true)
+      setSidebarClosing(false)
+    }
+  }, [layout])
 
   // ==========================================================================
   // REFS
@@ -337,13 +351,16 @@ export default function ChatPanel({
 
   // ==========================================================================
   // VIEW CHANGE HANDLERS (for sidebar animations)
+  // CRITICAL: These handlers are registered ONCE at mount and cannot be updated.
+  // We use layoutRef to access current layout value.
   // ==========================================================================
 
   /**
    * Handle view state changes for sidebar layout
    */
   const onViewChange = useCallback((event: ViewChangeEvent) => {
-    if (layout !== 'sidebar') return
+    // Use ref to get current layout (callbacks can't be updated after mount)
+    if (layoutRef.current !== 'sidebar') return
 
     if (event.newViewState.mainWindow) {
       setSidebarOpen(true)
@@ -351,20 +368,20 @@ export default function ChatPanel({
       setSidebarOpen(false)
       setSidebarClosing(false)
     }
-  }, [layout])
+  }, []) // No dependencies - uses ref instead
 
   /**
    * Handle pre-view-change for sidebar animations
    */
   const onViewPreChange = useCallback(async (event: ViewChangeEvent) => {
-    if (layout !== 'sidebar') return
+    if (layoutRef.current !== 'sidebar') return
 
     // If closing (mainWindow going from true to false)
     if (!event.newViewState.mainWindow) {
       setSidebarClosing(true)
       await sleep(SIDEBAR_ANIMATION_MS)
     }
-  }, [layout])
+  }, []) // No dependencies - uses ref instead
 
   // ==========================================================================
   // LAYOUT-SPECIFIC CSS CLASS
@@ -2031,8 +2048,8 @@ export default function ChatPanel({
           ...sharedConfig
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any}
-        onViewChange={layout === 'sidebar' ? onViewChange : undefined}
-        onViewPreChange={layout === 'sidebar' ? onViewPreChange : undefined}
+        onViewChange={onViewChange}      // Always pass - handler checks layout internally
+        onViewPreChange={onViewPreChange} // Always pass - handler checks layout internally
         onAfterRender={onAfterRender}
         renderUserDefinedResponse={renderCustomResponse}
         messaging={{
