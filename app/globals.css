@@ -641,6 +641,51 @@ body {
 }
 
 /* -----------------------------------------------------------------------------
+ * EXTERNAL LAUNCHER (for sidebar mode when minimized)
+ * Carbon's cds-aichat--hidden shrinks the entire element to 0x0,
+ * so we need an external button that lives outside the ChatCustomElement
+ * ----------------------------------------------------------------------------- */
+
+.sidebar-external-launcher {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: calc(var(--chat-z-index) + 1);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-external-launcher:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.sidebar-external-launcher:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.sidebar-external-launcher:active {
+  transform: scale(0.95);
+}
+
+/* RTL support for external launcher */
+[dir="rtl"] .sidebar-external-launcher {
+  right: auto;
+  left: 20px;
+}
+
+/* -----------------------------------------------------------------------------
  * RESPONSIVE
  * ----------------------------------------------------------------------------- */
 
@@ -651,6 +696,10 @@ body {
 
   .layout-toggle--floating {
     bottom: 5rem;
+  }
+
+  .sidebar-external-launcher {
+    bottom: 80px; /* Move up on mobile to avoid overlapping other controls */
   }
 }
 
@@ -677,5 +726,13 @@ body {
 
   .layout-toggle__menu-item:hover {
     background: rgba(255, 255, 255, 0.05);
+  }
+
+  .sidebar-external-launcher {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar-external-launcher:hover {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
   }
 }

@@ -224,6 +224,11 @@ export default function ChatPanel({
   // This prevents re-renders from overwriting the hidden class
   const [isViewOpen, setIsViewOpen] = useState(true)
 
+  // External launcher for sidebar mode - shown when sidebar is minimized
+  // This is necessary because Carbon's cds-aichat--hidden class shrinks the entire
+  // custom element to 0x0, hiding the built-in launcher along with everything else
+  const [showExternalLauncher, setShowExternalLauncher] = useState(false)
+
   // Ref to access current layout in callbacks (since callbacks can't be updated after mount)
   const layoutRef = useRef(layout)
   useEffect(() => {
@@ -236,8 +241,23 @@ export default function ChatPanel({
       setSidebarOpen(true)
       setSidebarClosing(false)
       setIsViewOpen(true) // Reset to open when switching to sidebar layout
+      setShowExternalLauncher(false) // Hide external launcher when sidebar is open
+    } else {
+      // Hide external launcher for non-sidebar layouts
+      setShowExternalLauncher(false)
     }
   }, [layout])
+
+  /**
+   * Open the sidebar by triggering Carbon's changeView action
+   * Used by the external launcher button when sidebar is minimized
+   */
+  const handleOpenSidebar = useCallback(() => {
+    const instance = chatInstanceRef.current
+    if (instance?.actions?.changeView) {
+      instance.actions.changeView('MAIN_WINDOW')
+    }
+  }, [])
 
   // ==========================================================================
   // REFS
@@ -381,9 +401,11 @@ export default function ChatPanel({
     if (currentLayout === 'sidebar') {
       if (event.newViewState.mainWindow) {
         setSidebarOpen(true)
+        setShowExternalLauncher(false) // Hide external launcher when sidebar opens
       } else {
         setSidebarOpen(false)
         setSidebarClosing(false)
+        setShowExternalLauncher(true) // Show external launcher when sidebar closes
       }
     }
   }, [])
@@ -2020,6 +2042,29 @@ export default function ChatPanel({
             />
           </div>
         </div>
+      )}
+
+      {/* External launcher for sidebar mode - visible when sidebar is minimized */}
+      {/* This is necessary because Carbon's cds-aichat--hidden shrinks the entire */}
+      {/* custom element to 0x0, hiding the built-in launcher */}
+      {layout === 'sidebar' && showExternalLauncher && (
+        <button
+          className="sidebar-external-launcher"
+          onClick={handleOpenSidebar}
+          aria-label="Open chat"
+          title="Open chat"
+        >
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 32 32"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M17.74 30L16 29l4-7h6a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h9v2H6a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4h20a4 4 0 0 1 4 4v12a4 4 0 0 1-4 4h-4.84Z" />
+            <path d="M8 10h16v2H8zM8 16h10v2H8z" />
+          </svg>
+        </button>
       )}
     </>
   )
