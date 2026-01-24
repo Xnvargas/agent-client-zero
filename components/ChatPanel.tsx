@@ -370,25 +370,24 @@ export default function ChatPanel({
   // LAYOUT-SPECIFIC CSS CLASS
   // ==========================================================================
 
-  const chatClassName = useMemo(() => {
+  // CRITICAL: This class is applied DIRECTLY to ChatCustomElement
+  // Carbon requires explicit viewport dimensions on this element, not percentages
+  const elementClassName = useMemo(() => {
     switch (layout) {
       case 'fullscreen':
-        return 'chat-panel chat-panel--fullscreen'
+        return 'chat-element--fullscreen'
 
       case 'sidebar':
-        let sidebarClass = 'chat-panel chat-panel--sidebar'
+        let sidebarClass = 'chat-element--sidebar'
         if (sidebarClosing) {
-          sidebarClass += ' chat-panel--sidebar-closing'
+          sidebarClass += ' chat-element--sidebar-closing'
         } else if (!sidebarOpen) {
-          sidebarClass += ' chat-panel--sidebar-closed'
+          sidebarClass += ' chat-element--sidebar-closed'
         }
         return sidebarClass
 
-      case 'float':
-        return 'chat-panel chat-panel--float'
-
       default:
-        return 'chat-panel chat-panel--fullscreen'
+        return 'chat-element--fullscreen'
     }
   }, [layout, sidebarOpen, sidebarClosing])
 
@@ -2020,13 +2019,15 @@ export default function ChatPanel({
   // FULLSCREEN & SIDEBAR LAYOUTS - Use ChatCustomElement
   // ==========================================================================
 
+  // CRITICAL: No parent wrapper div for sizing
+  // className with explicit viewport dimensions goes directly on ChatCustomElement
   return (
-    <div className={chatClassName}>
+    <>
       {overlays}
 
       <ChatCustomElement
         {...{
-          className: 'chat-panel__element',
+          className: elementClassName,  // Direct sizing class
           ...sharedConfig
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any}
@@ -2046,6 +2047,6 @@ export default function ChatPanel({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any}
       />
-    </div>
+    </>
   )
 }
