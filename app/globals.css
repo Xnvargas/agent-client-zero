@@ -333,6 +333,15 @@ body {
   z-index: var(--chat-z-index) !important;
 }
 
+/* When minimized - allow Carbon's hidden class to work */
+.chat-element--fullscreen.cds-aichat--hidden {
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
 /* -----------------------------------------------------------------------------
  * SIDEBAR LAYOUT
  * Applied directly to ChatCustomElement's className
@@ -353,6 +362,15 @@ body {
 
 .chat-element--sidebar-closing {
   transform: translateX(100%) !important;
+}
+
+/* When minimized - allow Carbon's hidden class to work */
+.chat-element--sidebar.cds-aichat--hidden {
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 
 /* No longer needed - Carbon's cds-aichat--hidden handles hiding
