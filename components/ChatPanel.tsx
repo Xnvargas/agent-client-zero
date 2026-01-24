@@ -361,98 +361,49 @@ export default function ChatPanel({
   /**
    * Handle view state changes for all layouts
    *
-   * CRITICAL: This handler REPLACES Carbon's default handler, so we MUST
-   * replicate the hide/show class toggle behavior ourselves.
-   *
-   * Carbon's default adds/removes 'cds-aichat--hidden' class which sets
-   * the element to 0x0 size, effectively hiding it.
+   * CRITICAL: When we provide onViewChange, it REPLACES Carbon's default handler.
+   * We MUST toggle 'cds-aichat--hidden' class ourselves to hide/show the chat.
    */
   const onViewChange = useCallback((event: ViewChangeEvent) => {
     const currentLayout = layoutRef.current
 
-    // Find the custom element by class
+    // Find the ChatCustomElement's container div
     const element = document.querySelector(
       '.chat-element--fullscreen, .chat-element--sidebar'
     ) as HTMLElement | null
 
-    // =======================================================================
-    // FULLSCREEN: Prevent minimize entirely
-    // No launcher is shown, but if minimize is triggered (e.g., programmatically),
-    // immediately re-open to keep chat visible.
-    // =======================================================================
-    if (currentLayout === 'fullscreen') {
-      // Always keep visible
-      if (element) {
-        element.classList.remove('cds-aichat--hidden')
-      }
-      // If closing was triggered, re-open immediately
-      if (!event.newViewState.mainWindow) {
-        const instance = chatInstanceRef.current
-        if (instance?.toggleOpen) {
-          setTimeout(() => instance.toggleOpen(), 10)
-        }
-      }
-      return
-    }
-
-    // =======================================================================
-    // SIDEBAR: Apply hide/show with animation state
-    // Must toggle 'cds-aichat--hidden' class (Carbon's default behavior)
-    // =======================================================================
-    if (currentLayout === 'sidebar') {
-      if (event.newViewState.mainWindow) {
-        // OPENING: Remove hidden class, update state
-        if (element) {
-          element.classList.remove('cds-aichat--hidden')
-        }
-        setSidebarOpen(true)
-      } else {
-        // CLOSING: Add hidden class, update state
-        if (element) {
-          element.classList.add('cds-aichat--hidden')
-        }
-        setSidebarOpen(false)
-        setSidebarClosing(false)
-      }
-      return
-    }
-
-    // =======================================================================
-    // DEFAULT: Apply Carbon's standard hide/show behavior
-    // (Fallback for any other layout using ChatCustomElement)
-    // =======================================================================
+    // Toggle the hidden class (replicates Carbon's default behavior)
     if (element) {
       if (event.newViewState.mainWindow) {
+        // OPENING: Remove hidden class to show chat
         element.classList.remove('cds-aichat--hidden')
       } else {
+        // CLOSING/MINIMIZING: Add hidden class to hide chat
         element.classList.add('cds-aichat--hidden')
+      }
+    }
+
+    // Additional sidebar-specific state for animations
+    if (currentLayout === 'sidebar') {
+      if (event.newViewState.mainWindow) {
+        setSidebarOpen(true)
+      } else {
+        setSidebarOpen(false)
+        setSidebarClosing(false)
       }
     }
   }, [])
 
   /**
    * Handle pre-view-change for animations
-   *
-   * IMPORTANT: This is async - Carbon waits for it to complete before VIEW_CHANGE
+   * Only sidebar needs special animation handling
    */
   const onViewPreChange = useCallback(async (event: ViewChangeEvent) => {
-    const currentLayout = layoutRef.current
-
-    // FULLSCREEN: No pre-change handling needed (we prevent minimize in onViewChange)
-    if (currentLayout === 'fullscreen') {
-      return
+    // Only sidebar needs closing animation
+    if (layoutRef.current === 'sidebar' && !event.newViewState.mainWindow) {
+      setSidebarClosing(true)
+      await sleep(SIDEBAR_ANIMATION_MS)
     }
-
-    // SIDEBAR: Trigger closing animation before hide
-    if (currentLayout === 'sidebar') {
-      if (!event.newViewState.mainWindow) {
-        setSidebarClosing(true)
-        await sleep(SIDEBAR_ANIMATION_MS)
-      }
-      return
-    }
-
-    // FLOAT: Not applicable
   }, [])
 
   // ==========================================================================
@@ -2028,12 +1979,9 @@ export default function ChatPanel({
       title: agentName,
       menuOptions: headerMenuOptions
     },
-    // Launcher config:
-    // - Float: launcher enabled (standard behavior)
-    // - Sidebar: launcher enabled (to re-open after minimize)
-    // - Fullscreen: NO launcher (chat always visible, no minimize)
+    // Enable launcher for ALL layouts - allows minimize/restore
     launcher: {
-      isOn: layout === 'float' || layout === 'sidebar'
+      isOn: true
     }
   }), [layout, customStrings, agentName, headerMenuOptions])
 
