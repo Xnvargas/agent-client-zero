@@ -356,32 +356,67 @@ export default function ChatPanel({
   // ==========================================================================
 
   /**
-   * Handle view state changes for sidebar layout
+   * Handle view state changes for all layouts
+   *
+   * IMPORTANT: This handler is registered ONCE and cannot be updated.
+   * We use layoutRef to check current layout and chatInstanceRef to access the instance.
    */
   const onViewChange = useCallback((event: ViewChangeEvent) => {
-    // Use ref to get current layout (callbacks can't be updated after mount)
-    if (layoutRef.current !== 'sidebar') return
+    const currentLayout = layoutRef.current
 
-    if (event.newViewState.mainWindow) {
-      setSidebarOpen(true)
-    } else {
-      setSidebarOpen(false)
-      setSidebarClosing(false)
+    // FULLSCREEN: Prevent minimize - immediately re-open
+    if (currentLayout === 'fullscreen') {
+      if (!event.newViewState.mainWindow) {
+        // User tried to minimize - re-open immediately
+        const instance = chatInstanceRef.current
+        if (instance?.toggleOpen) {
+          // Small delay to let Carbon finish its state update
+          setTimeout(() => {
+            instance.toggleOpen()
+          }, 50)
+        }
+      }
+      return
     }
-  }, []) // No dependencies - uses ref instead
+
+    // SIDEBAR: Handle open/close with animation state
+    if (currentLayout === 'sidebar') {
+      if (event.newViewState.mainWindow) {
+        setSidebarOpen(true)
+      } else {
+        setSidebarOpen(false)
+        setSidebarClosing(false)
+      }
+      return
+    }
+
+    // FLOAT: Handled by ChatContainer, not ChatCustomElement
+  }, [])
 
   /**
-   * Handle pre-view-change for sidebar animations
+   * Handle pre-view-change for animations
+   *
+   * IMPORTANT: This is async - Carbon waits for it to complete before VIEW_CHANGE
    */
   const onViewPreChange = useCallback(async (event: ViewChangeEvent) => {
-    if (layoutRef.current !== 'sidebar') return
+    const currentLayout = layoutRef.current
 
-    // If closing (mainWindow going from true to false)
-    if (!event.newViewState.mainWindow) {
-      setSidebarClosing(true)
-      await sleep(SIDEBAR_ANIMATION_MS)
+    // FULLSCREEN: No pre-change handling needed (we prevent minimize in onViewChange)
+    if (currentLayout === 'fullscreen') {
+      return
     }
-  }, []) // No dependencies - uses ref instead
+
+    // SIDEBAR: Trigger closing animation before hide
+    if (currentLayout === 'sidebar') {
+      if (!event.newViewState.mainWindow) {
+        setSidebarClosing(true)
+        await sleep(SIDEBAR_ANIMATION_MS)
+      }
+      return
+    }
+
+    // FLOAT: Not applicable
+  }, [])
 
   // ==========================================================================
   // LAYOUT-SPECIFIC CSS CLASS
@@ -1956,7 +1991,9 @@ export default function ChatPanel({
       title: agentName,
       menuOptions: headerMenuOptions
     },
-    ...(layout === 'float' && {
+    // Enable launcher for float and sidebar (needed to re-open after minimize)
+    // Fullscreen doesn't need launcher - we prevent minimize there
+    ...((layout === 'float' || layout === 'sidebar') && {
       launcher: {
         isOn: true
       }
