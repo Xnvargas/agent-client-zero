@@ -3,9 +3,12 @@
 import { useState, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import AgentSetup, { clearSavedConfig, type AgentConfig, type A2AExtensionConfig } from './AgentSetup'
+import type { ChatLayout } from './types/chat'
+import { DEFAULT_LAYOUT, loadSavedLayout, saveLayoutPreference } from './types/chat'
+import LayoutToggle from './LayoutToggle'
 
-// Dynamic import for FullScreenChat to avoid SSR issues
-const FullScreenChat = dynamic(() => import('./FullScreenChat'), {
+// Dynamic import for ChatPanel to avoid SSR issues
+const ChatPanel = dynamic(() => import('./ChatPanel'), {
   ssr: false,
   loading: () => (
     <div className="loading-spinner">
@@ -15,10 +18,15 @@ const FullScreenChat = dynamic(() => import('./FullScreenChat'), {
 })
 
 interface AgentChatAppProps {
-  // Optional props to bypass setup screen (for backwards compatibility)
+  // Optional props to bypass setup screen
   defaultAgentUrl?: string
   defaultApiKey?: string
   skipSetup?: boolean
+  // Layout configuration
+  initialLayout?: ChatLayout
+  showLayoutToggle?: boolean
+  // Allow embedding in custom containers
+  className?: string
 }
 
 // Default settings for skip setup mode
@@ -37,10 +45,17 @@ const DEFAULT_SKIP_EXTENSIONS: A2AExtensionConfig = {
 export default function AgentChatApp({
   defaultAgentUrl,
   defaultApiKey,
-  skipSetup = false
+  skipSetup = false,
+  initialLayout,
+  showLayoutToggle = true,
+  className = ''
 }: AgentChatAppProps) {
+
+  // ==========================================================================
+  // AGENT CONFIG STATE
+  // ==========================================================================
+
   const [config, setConfig] = useState<AgentConfig | null>(() => {
-    // If skipSetup is true and we have a default URL, create a config immediately
     if (skipSetup && defaultAgentUrl) {
       return {
         agentUrl: defaultAgentUrl,
@@ -56,6 +71,23 @@ export default function AgentChatApp({
     return null
   })
 
+  // ==========================================================================
+  // LAYOUT STATE
+  // ==========================================================================
+
+  const [layout, setLayout] = useState<ChatLayout>(() => {
+    return initialLayout ?? loadSavedLayout()
+  })
+
+  const handleLayoutChange = useCallback((newLayout: ChatLayout) => {
+    setLayout(newLayout)
+    saveLayoutPreference(newLayout)
+  }, [])
+
+  // ==========================================================================
+  // CONNECTION HANDLERS
+  // ==========================================================================
+
   const handleConnect = useCallback((newConfig: AgentConfig) => {
     setConfig(newConfig)
   }, [])
@@ -64,6 +96,10 @@ export default function AgentChatApp({
     clearSavedConfig()
     setConfig(null)
   }, [])
+
+  // ==========================================================================
+  // RENDER
+  // ==========================================================================
 
   // Show setup screen if not connected
   if (!config) {
@@ -78,15 +114,36 @@ export default function AgentChatApp({
 
   // Show chat when connected
   return (
-    <FullScreenChat
-      agentUrl={config.agentUrl}
-      apiKey={config.apiKey}
-      agentName={config.agentCard.name}
-      agentDescription={config.agentCard.description}
-      agentIconUrl={config.agentCard.iconUrl}  // Custom icon (defaults to '/bot.svg')
-      onDisconnect={handleDisconnect}
-      extensions={config.extensions}
-      showThinkingIndicator={config.settings?.thinkingEnabled ?? true}
-    />
+    <div className={`agent-chat-app ${className}`}>
+      <ChatPanel
+        agentUrl={config.agentUrl}
+        apiKey={config.apiKey}
+        agentName={config.agentCard.name}
+        agentDescription={config.agentCard.description}
+        agentIconUrl={config.agentCard.iconUrl}
+        layout={layout}
+        onLayoutChange={handleLayoutChange}
+        onDisconnect={handleDisconnect}
+        extensions={config.extensions}
+        showThinkingIndicator={config.settings?.thinkingEnabled ?? true}
+        showLayoutToggle={showLayoutToggle}
+      />
+
+      {/* Optional: Floating layout toggle (alternative to header menu) */}
+      {showLayoutToggle && layout !== 'float' && (
+        <LayoutToggle
+          currentLayout={layout}
+          onLayoutChange={handleLayoutChange}
+          variant="floating"
+        />
+      )}
+    </div>
   )
 }
+
+// =============================================================================
+// EXPORTS FOR EXTERNAL USE
+// =============================================================================
+
+export { type ChatLayout } from './types/chat'
+export { DEFAULT_LAYOUT, loadSavedLayout, saveLayoutPreference } from './types/chat'
