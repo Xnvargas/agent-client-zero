@@ -365,12 +365,15 @@ body {
 }
 
 /* When minimized - allow Carbon's hidden class to work */
+/* NOTE: Do NOT use overflow:hidden here - it clips the launcher button */
+/* The launcher uses position:fixed but the sidebar's transform property */
+/* creates a new containing block, making fixed children relative to sidebar */
 .chat-element--sidebar.cds-aichat--hidden {
   width: 0 !important;
   height: 0 !important;
   min-width: 0 !important;
   min-height: 0 !important;
-  overflow: hidden !important;
+  /* overflow: hidden removed to keep launcher visible */
 }
 
 /* No longer needed - Carbon's cds-aichat--hidden handles hiding
