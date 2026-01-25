@@ -1,7 +1,7 @@
 {
   "name": "@kuntur/a2a-carbon-chat-adapter",
   "version": "0.1.0",
-  "description": "A2A protocol adapter for Carbon AI Chat - connect any A2A agent to Carbon UI",
+  "description": "A2A protocol adapter for Carbon AI Chat - connect any A2A agent to Carbon Chat UI",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -83,12 +83,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/xavierau/a2a-carbon-chat-adapter"
+    "url": "https://github.com/Xnvargas/a2a-carbon-chat-adapter.git"
   },
   "bugs": {
-    "url": "https://github.com/xavierau/a2a-carbon-chat-adapter/issues"
+    "url": "https://github.com/Xnvargas/a2a-carbon-chat-adapter/issues"
   },
-  "homepage": "https://github.com/xavierau/a2a-carbon-chat-adapter#readme",
+  "homepage": "https://github.com/Xnvargas/a2a-carbon-chat-adapter#readme",
   "license": "MIT",
-  "author": "Xavier Au"
+  "author": "Xavier Vargas"
 }
