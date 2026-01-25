@@ -16,14 +16,16 @@ export default defineConfig([
       js: '"use client";',
     },
   },
-  // Server bundle
+  // Server bundle - use named entry to flatten output path
+  // This ensures output is dist/server.js instead of dist/server/index.js
+  // which matches the package.json exports configuration
   {
-    entry: ['src/server/index.ts'],
+    entry: { server: 'src/server/index.ts' },
     outDir: 'dist',
     format: ['esm', 'cjs'],
     dts: true,
     sourcemap: true,
     external: ['react', 'react-dom'],
-    clean: false, // Don't clean, main bundle already did
+    clean: false,
   },
 ]);
