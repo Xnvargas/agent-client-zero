@@ -16,9 +16,7 @@ export default defineConfig([
       js: '"use client";',
     },
   },
-  // Server bundle - use named entry to flatten output path
-  // This ensures output is dist/server.js instead of dist/server/index.js
-  // which matches the package.json exports configuration
+  // Server bundle - named entry for flat output (dist/server.js)
   {
     entry: { server: 'src/server/index.ts' },
     outDir: 'dist',
@@ -26,6 +24,12 @@ export default defineConfig([
     dts: true,
     sourcemap: true,
     external: ['react', 'react-dom'],
+    clean: false,
+  },
+  // Styles bundle - copy CSS to dist
+  {
+    entry: ['src/styles/index.css'],
+    outDir: 'dist/styles',
     clean: false,
   },
 ]);

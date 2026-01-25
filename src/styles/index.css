@@ -1,11 +1,14 @@
 /**
- * @kuntur/a2a-carbon-chat-adapter base styles
+ * @kuntur/a2a-carbon-chat-adapter styles
  *
- * These are optional utility styles. Carbon AI Chat provides its own styling.
+ * Required styles for A2AChat component layouts and UI elements.
  * Import with: import '@kuntur/a2a-carbon-chat-adapter/styles';
  */
 
-/* Chat container layouts */
+/* =============================================================================
+   CHAT CONTAINER LAYOUTS
+   ============================================================================= */
+
 .a2a-chat {
   position: relative;
 }
@@ -28,7 +31,10 @@
   z-index: 1000;
 }
 
-/* Loading state */
+/* =============================================================================
+   LOADING STATE
+   ============================================================================= */
+
 .a2a-chat--loading {
   display: flex;
   align-items: center;
@@ -51,13 +57,19 @@
   }
 }
 
-/* Error state */
+/* =============================================================================
+   ERROR STATE
+   ============================================================================= */
+
 .a2a-chat--error {
   padding: 1rem;
   color: var(--cds-text-error, #da1e28);
 }
 
-/* Form overlay */
+/* =============================================================================
+   FORM OVERLAY
+   ============================================================================= */
+
 .a2a-chat__form-overlay {
   position: absolute;
   inset: 0;
@@ -68,7 +80,10 @@
   z-index: 100;
 }
 
-/* Sources list */
+/* =============================================================================
+   SOURCES / CITATIONS LIST
+   ============================================================================= */
+
 .a2a-sources-list {
   margin-top: 1rem;
   padding-top: 1rem;
@@ -102,7 +117,10 @@
   text-decoration: underline;
 }
 
-/* Agent switcher */
+/* =============================================================================
+   AGENT SWITCHER - BASE
+   ============================================================================= */
+
 .a2a-agent-switcher {
   display: flex;
   align-items: center;
@@ -122,6 +140,10 @@
   font-size: 0.875rem;
 }
 
+/* =============================================================================
+   AGENT SWITCHER - TABS VARIANT
+   ============================================================================= */
+
 .a2a-agent-switcher--tabs .a2a-agent-switcher__tabs {
   display: flex;
   gap: 0;
@@ -139,6 +161,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  transition: color 0.15s, border-color 0.15s;
 }
 
 .a2a-agent-switcher__tab:hover {
@@ -156,7 +179,10 @@
   border-radius: 50%;
 }
 
-/* Cards variant */
+/* =============================================================================
+   AGENT SWITCHER - CARDS VARIANT
+   ============================================================================= */
+
 .a2a-agent-switcher--cards .a2a-agent-switcher__cards {
   display: flex;
   flex-wrap: wrap;
@@ -205,4 +231,154 @@
 .a2a-agent-switcher__card-description {
   font-size: 0.75rem;
   color: var(--cds-text-secondary, #525252);
+}
+
+/* =============================================================================
+   INLINE CITATION MARKERS
+   ============================================================================= */
+
+.a2a-citation-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.25rem;
+  margin: 0 0.125rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--cds-link-primary, #0f62fe);
+  background: var(--cds-background-hover, #e8e8e8);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  vertical-align: super;
+  transition: background-color 0.15s;
+}
+
+.a2a-citation-marker:hover {
+  background: var(--cds-background-active, #c6c6c6);
+}
+
+/* =============================================================================
+   ERROR RENDERER
+   ============================================================================= */
+
+.a2a-error {
+  padding: 1rem;
+  background: var(--cds-notification-error-background, #fff1f1);
+  border-left: 3px solid var(--cds-support-error, #da1e28);
+  border-radius: 0 4px 4px 0;
+}
+
+.a2a-error__title {
+  font-weight: 600;
+  color: var(--cds-text-error, #da1e28);
+  margin-bottom: 0.5rem;
+}
+
+.a2a-error__message {
+  font-size: 0.875rem;
+  color: var(--cds-text-primary, #161616);
+}
+
+.a2a-error__stack {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: var(--cds-field, #f4f4f4);
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* =============================================================================
+   FORM RENDERER
+   ============================================================================= */
+
+.a2a-form {
+  background: var(--cds-layer, #ffffff);
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 400px;
+  width: 100%;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.a2a-form__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.a2a-form__description {
+  font-size: 0.875rem;
+  color: var(--cds-text-secondary, #525252);
+  margin-bottom: 1.5rem;
+}
+
+.a2a-form__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.a2a-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.a2a-form__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.a2a-form__input {
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--cds-border-strong, #8d8d8d);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: var(--cds-field, #f4f4f4);
+}
+
+.a2a-form__input:focus {
+  outline: 2px solid var(--cds-focus, #0f62fe);
+  outline-offset: -2px;
+}
+
+.a2a-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.a2a-form__button {
+  padding: 0.625rem 1rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.a2a-form__button--secondary {
+  background: transparent;
+  border: 1px solid var(--cds-border-strong, #8d8d8d);
+  color: var(--cds-text-primary, #161616);
+}
+
+.a2a-form__button--secondary:hover {
+  background: var(--cds-background-hover, #e8e8e8);
+}
+
+.a2a-form__button--primary {
+  background: var(--cds-interactive, #0f62fe);
+  border: none;
+  color: #ffffff;
+}
+
+.a2a-form__button--primary:hover {
+  background: var(--cds-interactive-hover, #0353e9);
 }

@@ -12,14 +12,15 @@ npm install @kuntur/a2a-carbon-chat-adapter @carbon/ai-chat react react-dom
 
 ```tsx
 import { A2AChat } from '@kuntur/a2a-carbon-chat-adapter';
-import '@carbon/ai-chat/styles.css';
+import '@kuntur/a2a-carbon-chat-adapter/styles'; // Adapter layout styles
+import '@carbon/ai-chat/dist/styles.css';        // Carbon AI Chat styles (if not already imported)
 
 function App() {
   return (
     <A2AChat
       agentUrl="https://your-agent.example.com"
       agentName="My Agent"
-      layout="fullscreen"
+      layout="sidebar"
     />
   );
 }
@@ -67,9 +68,12 @@ function ChatWithSwitcher() {
 import { createA2AHandler } from '@kuntur/a2a-carbon-chat-adapter/server';
 
 export const POST = createA2AHandler({
-  allowedAgentUrls: ['https://trusted-agents.example.com'],
+  allowedAgentUrls: ['https://trusted-agent.example.com'],
   timeout: 120000,
 });
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 ```
 
 ## Programmatic Usage with Hooks
