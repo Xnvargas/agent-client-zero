@@ -139,6 +139,10 @@ export function A2AChat({
   const translatorRef = useRef<A2AToCarbonTranslator | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Track whether Carbon has fully initialized (for embedded mode)
+  // Prevents responding to VIEW_CHANGE events fired during initialization
+  const embeddedInitializedRef = useRef(false);
+
   // ---------------------------------------------------------------------------
   // SIDEBAR VIEW STATE (for minimize/maximize handling)
   // ---------------------------------------------------------------------------
@@ -159,6 +163,16 @@ export function A2AChat({
   useEffect(() => {
     layoutRef.current = layout;
   }, [layout]);
+
+  // Reset initialization state on unmount (for embedded mode)
+  // This ensures clean state if parent remounts the component
+  useEffect(() => {
+    return () => {
+      if (embedded) {
+        embeddedInitializedRef.current = false;
+      }
+    };
+  }, [embedded]);
 
   // ---------------------------------------------------------------------------
   // LOAD CARBON COMPONENTS
@@ -211,6 +225,14 @@ export function A2AChat({
 
       // EMBEDDED MODE: Signal parent to close, don't manage internal state
       if (embedded) {
+        // CRITICAL: Ignore view changes until Carbon has fully initialized.
+        // Carbon may fire VIEW_CHANGE during initialization with mainWindow: false,
+        // which would incorrectly trigger onClose and unmount the component.
+        if (!embeddedInitializedRef.current) {
+          console.log('[A2AChat] Ignoring view change during initialization');
+          return;
+        }
+
         if (!event.newViewState.mainWindow) {
           // User clicked minimize - tell parent to close the sidebar
           onClose?.();
@@ -496,8 +518,15 @@ export function A2AChat({
 
   const handleAfterRender = useCallback((instance: any) => {
     instanceRef.current = instance;
+
+    // Mark embedded mode as initialized - safe to respond to view changes now
+    if (embedded) {
+      embeddedInitializedRef.current = true;
+      console.log('[A2AChat] Embedded mode initialized');
+    }
+
     console.log('[A2AChat] Chat instance ready');
-  }, []);
+  }, [embedded]);
 
   // ---------------------------------------------------------------------------
   // ELEMENT CLASS NAME (includes view state and embedded mode)
