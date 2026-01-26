@@ -259,6 +259,7 @@ interface TranslatorState {
   responseId: string
   itemId: string
   accumulatedText: string
+  accumulatedThinking: string  // For streaming thinking tokens to reasoning.content
   reasoningSteps: ReasoningStep[]
   chainOfThought: ChainOfThoughtStep[]
   pendingToolCalls: Map<string, number> // tool_name -> index in chainOfThought
@@ -295,6 +296,7 @@ export class A2AToCarbonTranslator {
       responseId: this.generateResponseId(),
       itemId: '1',
       accumulatedText: '',
+      accumulatedThinking: '',  // Initialize empty for streaming thinking tokens
       reasoningSteps: [],
       chainOfThought: [],
       pendingToolCalls: new Map(),
@@ -367,6 +369,13 @@ export class A2AToCarbonTranslator {
   }
 
   /**
+   * Get accumulated thinking content (for reasoning.content mode)
+   */
+  getAccumulatedThinking(): string {
+    return this.state.accumulatedThinking
+  }
+
+  /**
    * Get current reasoning steps
    */
   getReasoningSteps(): ReasoningStep[] {
@@ -419,9 +428,9 @@ export class A2AToCarbonTranslator {
       },
     }
 
-    // Initialize empty reasoning if requested
+    // Initialize empty reasoning with content mode (not steps) if requested
     if (includeReasoning) {
-      chunk.partial_response!.message_options!.reasoning = { steps: [] }
+      chunk.partial_response!.message_options!.reasoning = { content: '' }
     }
 
     return chunk
@@ -574,28 +583,69 @@ export class A2AToCarbonTranslator {
   }
 
   /**
-   * Translate thinking/reasoning content to Carbon reasoning step
+   * Translate thinking/reasoning content to Carbon format
+   *
+   * ROUTING LOGIC:
+   * - content_type='thinking' (no title) → reasoning.content (streaming)
+   * - content_type='reasoning_step' WITH title → reasoning.steps[] (discrete)
    */
   private translateThinkingPart(
     text: string,
     metadata?: Record<string, unknown>
   ): PartialItemChunk {
-    // Extract step number and title from metadata
-    const stepNumber = metadata?.step as number | undefined
+    const contentType = metadata?.content_type as string | undefined
     const stepTitle = metadata?.title as string | undefined
 
+    // STREAMING MODE: thinking tokens without title → reasoning.content
+    if (contentType === 'thinking' || !stepTitle) {
+      // Accumulate text into streaming content
+      this.state.accumulatedThinking += text
+
+      console.log('[Translator] Streaming thinking token:', {
+        tokenLength: text.length,
+        totalLength: this.state.accumulatedThinking.length
+      })
+
+      return {
+        partial_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: '',
+          streaming_metadata: {
+            id: this.state.itemId,
+            cancellable: true,
+          },
+        },
+        partial_response: {
+          message_options: {
+            response_user_profile: this.agentProfile,
+            reasoning: {
+              content: this.state.accumulatedThinking,  // Stream to content
+              // Preserve any existing steps
+              steps: this.state.reasoningSteps.length > 0
+                ? this.state.reasoningSteps
+                : undefined,
+            },
+          },
+        },
+        streaming_metadata: {
+          response_id: this.state.responseId,
+        },
+      }
+    }
+
+    // DISCRETE MODE: reasoning_step WITH title → reasoning.steps[]
     const newStep: ReasoningStep = {
-      title: stepTitle || `Thinking Step ${(stepNumber ?? this.state.reasoningSteps.length) + 1}`,
+      title: stepTitle,
       content: text,
       open_state: ReasoningStepOpenState.DEFAULT,
     }
 
     this.state.reasoningSteps.push(newStep)
 
-    console.log('[Translator] Added reasoning step:', {
-      step: stepNumber,
-      title: newStep.title,
-      textLength: text.length
+    console.log('[Translator] Added discrete reasoning step:', {
+      title: stepTitle,
+      textLength: text.length,
+      totalSteps: this.state.reasoningSteps.length
     })
 
     return {
@@ -611,8 +661,10 @@ export class A2AToCarbonTranslator {
         message_options: {
           response_user_profile: this.agentProfile,
           reasoning: {
+            // Include accumulated content if any
+            content: this.state.accumulatedThinking || undefined,
             steps: this.state.reasoningSteps,
-            open_state: ReasoningStepOpenState.DEFAULT,  // Auto-expand during streaming
+            open_state: ReasoningStepOpenState.DEFAULT,
           },
         },
       },
@@ -820,6 +872,17 @@ export class A2AToCarbonTranslator {
    * Optional but useful for accessibility and corrections.
    */
   createCompleteItem(wasStopped: boolean = false): CompleteItemChunk {
+    // Build reasoning object with both content and steps if available
+    const hasThinking = this.state.accumulatedThinking.length > 0
+    const hasSteps = this.state.reasoningSteps.length > 0
+    const reasoning = (hasThinking || hasSteps)
+      ? {
+          content: hasThinking ? this.state.accumulatedThinking : undefined,
+          steps: hasSteps ? this.state.reasoningSteps : undefined,
+          open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
+        }
+      : undefined
+
     return {
       complete_item: {
         response_type: MessageResponseTypes.TEXT,
@@ -832,12 +895,7 @@ export class A2AToCarbonTranslator {
       partial_response: {
         message_options: {
           response_user_profile: this.agentProfile,
-          reasoning: this.state.reasoningSteps.length > 0
-            ? {
-                steps: this.state.reasoningSteps,
-                open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
-              }
-            : undefined,
+          reasoning,
           chain_of_thought: this.state.chainOfThought.length > 0
             ? this.state.chainOfThought
             : undefined,
@@ -856,6 +914,17 @@ export class A2AToCarbonTranslator {
    * Without this, the UI will remain in a loading state.
    */
   createFinalResponse(): FinalResponseChunk {
+    // Build reasoning object with both content and steps if available
+    const hasThinking = this.state.accumulatedThinking.length > 0
+    const hasSteps = this.state.reasoningSteps.length > 0
+    const reasoning = (hasThinking || hasSteps)
+      ? {
+          content: hasThinking ? this.state.accumulatedThinking : undefined,
+          steps: hasSteps ? this.state.reasoningSteps : undefined,
+          open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
+        }
+      : undefined
+
     return {
       final_response: {
         id: this.state.responseId,
@@ -872,12 +941,7 @@ export class A2AToCarbonTranslator {
         },
         message_options: {
           response_user_profile: this.agentProfile,
-          reasoning: this.state.reasoningSteps.length > 0
-            ? {
-                steps: this.state.reasoningSteps,
-                open_state: ReasoningStepOpenState.CLOSE,  // Collapse after completion
-              }
-            : undefined,
+          reasoning,
           chain_of_thought: this.state.chainOfThought.length > 0
             ? this.state.chainOfThought
             : undefined,

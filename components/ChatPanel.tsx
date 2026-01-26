@@ -1403,34 +1403,59 @@ export default function ChatPanel({
                       continue
                     }
 
-                    // REASONING STEP -> Route to reasoning accordion
+                    // REASONING STEP -> Route based on whether title is present
                     if (contentType === 'reasoning_step' && part.kind === 'text' && part.text) {
-                      accumulatedThinkingRef.current += part.text
+                      const stepTitle = part.metadata?.title as string | undefined
 
-                      if (supportsChunking) {
-                        const instance = chatInstanceRef.current
-                        if (instance?.messaging?.addMessageChunk) {
-                          await instance.messaging.addMessageChunk({
-                            partial_item: {
-                              response_type: MessageResponseTypes.TEXT,
-                              text: '',
-                              streaming_metadata: { id: itemId, cancellable: true }
-                            },
-                            partial_response: {
-                              message_options: {
-                                response_user_profile: agentProfile,
-                                reasoning: { content: accumulatedThinkingRef.current }
-                              }
-                            },
-                            streaming_metadata: { response_id: responseId }
-                          })
+                      if (stepTitle) {
+                        // DISCRETE MODE: Has title -> add to reasoning.steps[]
+                        const newStep: ReasoningStep = {
+                          title: stepTitle,
+                          content: part.text,
+                          open_state: 'default'
                         }
-                      }
 
-                      console.log('[Handler] Streamed reasoning_step token:', {
-                        tokenLength: part.text.length,
-                        totalThinking: accumulatedThinkingRef.current.length
-                      })
+                        reasoningSteps.push(newStep)
+                        reasoningStepsRef.current = [...reasoningSteps]
+                        setReasoningSteps([...reasoningSteps])
+
+                        if (supportsChunking) {
+                          await debouncedPushReasoningSteps(responseId, reasoningSteps, itemId)
+                        }
+
+                        console.log('[Handler] Added discrete reasoning step:', {
+                          title: stepTitle,
+                          totalSteps: reasoningSteps.length
+                        })
+                      } else {
+                        // STREAMING MODE: No title -> append to reasoning.content
+                        accumulatedThinkingRef.current += part.text
+
+                        if (supportsChunking) {
+                          const instance = chatInstanceRef.current
+                          if (instance?.messaging?.addMessageChunk) {
+                            await instance.messaging.addMessageChunk({
+                              partial_item: {
+                                response_type: MessageResponseTypes.TEXT,
+                                text: '',
+                                streaming_metadata: { id: itemId, cancellable: true }
+                              },
+                              partial_response: {
+                                message_options: {
+                                  response_user_profile: agentProfile,
+                                  reasoning: { content: accumulatedThinkingRef.current }
+                                }
+                              },
+                              streaming_metadata: { response_id: responseId }
+                            })
+                          }
+                        }
+
+                        console.log('[Handler] Streamed reasoning_step token:', {
+                          tokenLength: part.text.length,
+                          totalThinking: accumulatedThinkingRef.current.length
+                        })
+                      }
 
                       continue
                     }

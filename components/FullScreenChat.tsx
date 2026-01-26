@@ -1395,44 +1395,63 @@ export default function FullScreenChat({
                     }
 
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // REASONING STEP → Route to both reasoning.content and chain_of_thought
-                    // For live streaming, push to reasoning.content
-                    // The batched version will come as a separate emit_reasoning_step from backend
-                    // which should be added to a "reasoning trace" section in chain_of_thought
+                    // REASONING STEP → Route based on whether title is present
+                    // - No title: stream to reasoning.content
+                    // - With title: add to reasoning.steps[] as discrete step
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     if (contentType === 'reasoning_step' && part.kind === 'text' && part.text) {
-                      // For live streaming, also push to reasoning.content
-                      accumulatedThinkingRef.current += part.text
+                      const stepTitle = part.metadata?.title as string | undefined
 
-                      // CRITICAL: Must include partial_item and streaming_metadata.response_id
-                      // so Carbon knows which message to update
-                      if (supportsChunking) {
-                        const instance = chatInstanceRef.current
-                        if (instance?.messaging?.addMessageChunk) {
-                          await instance.messaging.addMessageChunk({
-                            partial_item: {
-                              response_type: MessageResponseTypes.TEXT,
-                              text: '',  // Main text stays empty during reasoning
-                              streaming_metadata: { id: itemId, cancellable: true }
-                            },
-                            partial_response: {
-                              message_options: {
-                                response_user_profile: agentProfile,
-                                reasoning: { content: accumulatedThinkingRef.current }
-                              }
-                            },
-                            streaming_metadata: { response_id: responseId }
-                          })
+                      if (stepTitle) {
+                        // DISCRETE MODE: Has title -> add to reasoning.steps[]
+                        const newStep: ReasoningStep = {
+                          title: stepTitle,
+                          content: part.text,
+                          open_state: 'default'
                         }
+
+                        reasoningSteps.push(newStep)
+                        reasoningStepsRef.current = [...reasoningSteps]
+                        setReasoningSteps([...reasoningSteps])
+
+                        if (supportsChunking) {
+                          await debouncedPushReasoningSteps(responseId, reasoningSteps, itemId)
+                        }
+
+                        console.log('[Handler] Added discrete reasoning step:', {
+                          title: stepTitle,
+                          totalSteps: reasoningSteps.length
+                        })
+                      } else {
+                        // STREAMING MODE: No title -> append to reasoning.content
+                        accumulatedThinkingRef.current += part.text
+
+                        if (supportsChunking) {
+                          const instance = chatInstanceRef.current
+                          if (instance?.messaging?.addMessageChunk) {
+                            await instance.messaging.addMessageChunk({
+                              partial_item: {
+                                response_type: MessageResponseTypes.TEXT,
+                                text: '',  // Main text stays empty during reasoning
+                                streaming_metadata: { id: itemId, cancellable: true }
+                              },
+                              partial_response: {
+                                message_options: {
+                                  response_user_profile: agentProfile,
+                                  reasoning: { content: accumulatedThinkingRef.current }
+                                }
+                              },
+                              streaming_metadata: { response_id: responseId }
+                            })
+                          }
+                        }
+
+                        console.log('[Handler] Streamed reasoning_step token:', {
+                          tokenLength: part.text.length,
+                          totalThinking: accumulatedThinkingRef.current.length
+                        })
                       }
 
-                      console.log('[Handler] Streamed reasoning_step token:', {
-                        tokenLength: part.text.length,
-                        totalThinking: accumulatedThinkingRef.current.length
-                      })
-
-                      // The batched version will come as a separate emit_reasoning_step from backend
-                      // which should be added to a "reasoning trace" section in chain_of_thought
                       continue
                     }
 
