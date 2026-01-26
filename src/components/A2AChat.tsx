@@ -298,12 +298,19 @@ export function A2AChat({
    * Used by the external launcher button when sidebar is minimized
    * NOT used in embedded mode (parent handles opening via mount)
    */
-  const handleOpenSidebar = useCallback(() => {
+  const handleOpenSidebar = useCallback(async () => {
     if (embedded) return;
 
     const instance = instanceRef.current;
-    if (instance?.actions?.changeView) {
-      instance.actions.changeView('MAIN_WINDOW');
+    // NOTE: It's instance.changeView(), NOT instance.actions.changeView()
+    // NOTE: Parameter is 'mainWindow' (camelCase), NOT 'MAIN_WINDOW'
+    if (typeof instance?.changeView === 'function') {
+      try {
+        await instance.changeView('mainWindow');
+        console.log('[A2AChat] Opened sidebar via instance.changeView()');
+      } catch (error) {
+        console.error('[A2AChat] Error opening sidebar:', error);
+      }
     }
   }, [embedded]);
 
@@ -525,48 +532,60 @@ export function A2AChat({
   // AFTER RENDER HANDLER
   // ---------------------------------------------------------------------------
 
-  const handleAfterRender = useCallback((instance: any) => {
-    instanceRef.current = instance;
+  const handleAfterRender = useCallback(
+    async (instance: any) => {
+      instanceRef.current = instance;
 
-    // Mark embedded mode as initialized - safe to respond to view changes now
-    if (embedded) {
-      embeddedInitializedRef.current = true;
+      if (embedded) {
+        // Mark as initialized - safe to respond to view changes now
+        embeddedInitializedRef.current = true;
 
-      // CRITICAL FIX: In embedded mode, we must ensure the chat is actually open.
-      // Carbon has TWO hiding mechanisms:
-      // 1. Outer element: cds-aichat--hidden class with width/height: 0
-      // 2. Inner content: cds-aichat--hidden class with display: none (in App.scss)
-      //
-      // Even with openChatByDefault: true, Carbon's internal view state may not
-      // properly sync when we provide custom onViewChange handler.
-      //
-      // Solution: Programmatically open the chat via Carbon's changeView action.
-      requestAnimationFrame(() => {
-        // Step 1: Remove hidden class from outer element
-        const chatElement = instanceRef.current?.hostElement?.parentElement;
-        if (chatElement) {
-          chatElement.classList.remove('cds-aichat--hidden');
-        } else {
-          // Fallback: Query by class name
-          const embeddedElement = document.querySelector('.a2a-chat__element--embedded');
-          if (embeddedElement) {
-            embeddedElement.classList.remove('cds-aichat--hidden');
+        // CRITICAL FIX: Force Carbon to open its view
+        //
+        // Carbon has TWO hiding mechanisms:
+        // 1. Outer element: cds-aichat--hidden class (width: 0, height: 0)
+        // 2. Inner content: Controlled by viewState.mainWindow in Redux
+        //
+        // When we provide custom onViewChange, Carbon's default handler is replaced,
+        // so it never removes the hidden class or syncs the view state.
+        //
+        // Solution: Programmatically open the chat AFTER Carbon is ready.
+
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(async () => {
+          // Step 1: Remove hidden class from outer element (defensive)
+          const chatElement = instanceRef.current?.hostElement?.parentElement;
+          if (chatElement) {
+            chatElement.classList.remove('cds-aichat--hidden');
+            console.log('[A2AChat] Removed cds-aichat--hidden class');
           }
-        }
 
-        // Step 2: Programmatically open the chat to sync Carbon's internal state
-        // This ensures inner content is visible (removes display: none from inner elements)
-        if (instance?.actions?.changeView) {
-          instance.actions.changeView('MAIN_WINDOW');
-          console.log('[A2AChat] Programmatically opened chat view for embedded mode');
-        }
-      });
+          // Step 2: CRITICAL - Call changeView with CORRECT API
+          // NOTE: It's instance.changeView(), NOT instance.actions.changeView()
+          // NOTE: Parameter is 'mainWindow' (camelCase), NOT 'MAIN_WINDOW'
+          try {
+            if (typeof instance.changeView === 'function') {
+              await instance.changeView('mainWindow');
+              console.log('[A2AChat] Successfully opened chat view via instance.changeView()');
+            } else {
+              console.error('[A2AChat] instance.changeView is not a function!', {
+                instanceKeys: Object.keys(instance),
+                hasActions: !!instance.actions,
+                actionsKeys: instance.actions ? Object.keys(instance.actions) : [],
+              });
+            }
+          } catch (error) {
+            console.error('[A2AChat] Error calling changeView:', error);
+          }
+        });
 
-      console.log('[A2AChat] Embedded mode initialized');
-    }
+        console.log('[A2AChat] Embedded mode initialized');
+      }
 
-    console.log('[A2AChat] Chat instance ready');
-  }, [embedded]);
+      console.log('[A2AChat] Chat instance ready');
+    },
+    [embedded]
+  );
 
   // ---------------------------------------------------------------------------
   // ELEMENT CLASS NAME (includes view state and embedded mode)
