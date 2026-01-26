@@ -458,21 +458,34 @@
   right: auto !important;
   width: 100% !important;
   height: 100% !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
   z-index: auto !important;
   transform: none !important;
+  overflow: visible !important;
+}
+
+/* CRITICAL: Override Carbon's cds-aichat--hidden when in embedded mode */
+/* Carbon injects !important rules that collapse to 0x0, we must counter them */
+.a2a-chat__element--embedded.cds-aichat--hidden {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  inline-size: 100% !important;
+  block-size: 100% !important;
+  min-inline-size: 100% !important;
+  min-block-size: 100% !important;
+  max-inline-size: none !important;
+  max-block-size: none !important;
+  overflow: visible !important;
 }
 
 /* In embedded mode, never apply transform animations */
 .a2a-chat__element--embedded.a2a-chat__element--sidebar-closing {
   transform: none !important;
-}
-
-/* In embedded mode, never apply hidden transforms or sizing */
-.a2a-chat__element--embedded.cds-aichat--hidden {
-  transform: none !important;
-  width: 100% !important;
-  height: 100% !important;
-  /* Parent controls visibility via mount/unmount, not CSS */
 }
 
 /* =============================================================================

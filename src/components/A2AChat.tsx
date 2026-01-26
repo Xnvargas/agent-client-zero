@@ -233,6 +233,15 @@ export function A2AChat({
           return;
         }
 
+        // CRITICAL FIX: Always ensure hidden class is removed when chat should be visible
+        // This handles edge cases where Carbon might re-add the class
+        if (event.newViewState.mainWindow) {
+          const chatElement = instanceRef.current?.hostElement?.parentElement;
+          if (chatElement) {
+            chatElement.classList.remove('cds-aichat--hidden');
+          }
+        }
+
         if (!event.newViewState.mainWindow) {
           // User clicked minimize - tell parent to close the sidebar
           onClose?.();
@@ -522,6 +531,26 @@ export function A2AChat({
     // Mark embedded mode as initialized - safe to respond to view changes now
     if (embedded) {
       embeddedInitializedRef.current = true;
+
+      // CRITICAL FIX: Remove Carbon's hidden class in embedded mode
+      // Carbon applies cds-aichat--hidden by default, which collapses the element to 0x0.
+      // In embedded mode, the parent controls visibility via mount/unmount, so we must
+      // ensure the chat is visible when mounted.
+      requestAnimationFrame(() => {
+        const chatElement = instanceRef.current?.hostElement?.parentElement;
+        if (chatElement) {
+          chatElement.classList.remove('cds-aichat--hidden');
+          console.log('[A2AChat] Removed cds-aichat--hidden class for embedded mode');
+        } else {
+          // Fallback: Query by class name
+          const embeddedElement = document.querySelector('.a2a-chat__element--embedded');
+          if (embeddedElement) {
+            embeddedElement.classList.remove('cds-aichat--hidden');
+            console.log('[A2AChat] Removed cds-aichat--hidden class via fallback query');
+          }
+        }
+      });
+
       console.log('[A2AChat] Embedded mode initialized');
     }
 
