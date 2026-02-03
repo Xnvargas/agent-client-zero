@@ -1,6 +1,6 @@
 {
   "name": "@kuntur/a2a-carbon-chat-adapter",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "A2A protocol adapter for Carbon AI Chat - connect any A2A agent to Carbon Chat UI",
   "type": "module",
   "main": "./dist/index.cjs",
