@@ -1,6 +1,11 @@
 /**
  * Factory for creating Next.js API route handlers for A2A proxy
  *
+ * IMPORTANT: This handler automatically transforms extensions.context
+ * to message.metadata['swot-context'] because AgentStack doesn't expose
+ * params.extensions to agent functions. Agents read context from
+ * input.metadata['swot-context'] instead.
+ *
  * @example
  * // app/api/agent/chat/route.ts
  * import { createA2AHandler } from '@kuntur/a2a-carbon-chat-adapter/server';
@@ -38,6 +43,12 @@ export interface A2AHandlerOptions {
    * If provided, requests to non-matching URLs will be rejected
    */
   allowedAgentUrls?: (string | RegExp)[];
+
+  /**
+   * Key used for context in message metadata
+   * @default 'swot-context'
+   */
+  contextMetadataKey?: string;
 }
 
 function generateUUID(): string {
@@ -49,7 +60,13 @@ function generateUUID(): string {
 }
 
 export function createA2AHandler(options: A2AHandlerOptions = {}) {
-  const { onRequest, onError, timeout = 120000, allowedAgentUrls } = options;
+  const {
+    onRequest,
+    onError,
+    timeout = 120000,
+    allowedAgentUrls,
+    contextMetadataKey = 'swot-context'
+  } = options;
 
   return async function handler(request: Request): Promise<Response> {
     try {
@@ -93,17 +110,40 @@ export function createA2AHandler(options: A2AHandlerOptions = {}) {
         normalizedUrl = `${normalizedUrl}/`;
       }
 
+      // =====================================================================
+      // CONTEXT TRANSFORMATION
+      // =====================================================================
+      // AgentStack doesn't expose params.extensions to agent functions.
+      // We move extensions.context to message.metadata where agents CAN
+      // access it via the input: Message parameter.
+      // =====================================================================
+
+      const extensions = body.extensions || {};
+      const { context: appContext, ...otherExtensions } = extensions;
+
+      // Build message with optional context in metadata
+      const message: Record<string, unknown> = {
+        role: 'user',
+        messageId: generateUUID(),
+        parts: [{ kind: 'text', text: body.message }],
+      };
+
+      // Add context to message metadata if provided
+      if (appContext) {
+        message.metadata = {
+          [contextMetadataKey]: appContext
+        };
+        console.log(`[A2A Handler] Context added to message.metadata['${contextMetadataKey}']`);
+      }
+
       // Build A2A payload
       const payload = {
         jsonrpc: '2.0',
         method: 'message/stream',
         params: {
-          message: {
-            role: 'user',
-            messageId: generateUUID(),
-            parts: [{ kind: 'text', text: body.message }],
-          },
-          ...(body.extensions && { extensions: body.extensions }),
+          message,
+          // Only include extensions if there are non-context extensions
+          ...(Object.keys(otherExtensions).length > 0 && { extensions: otherExtensions }),
         },
         id: generateUUID(),
       };
